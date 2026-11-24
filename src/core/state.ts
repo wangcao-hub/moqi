@@ -117,6 +117,11 @@ export class State {
   /** Every answer the user gave to an offer, ignoring included, and every todo they finished or deleted. */
   feedbackCount = 0;
   userMessages = 0;
+  /** Every message, the user's and moqi's. */
+  messageCount = 0;
+  /** The older conversation in a few sentences, and how many messages it covers. */
+  summary: { readonly text: string; readonly at: number } | undefined;
+  summarized = 0;
   lastUserMessageAt = 0;
   lastEventAt = 0;
 
@@ -139,6 +144,7 @@ export class State {
     this.lastEventAt = e.at;
     switch (e.type) {
       case "message":
+        this.messageCount++;
         if (e.role === "user") {
           this.userMessages++;
           this.lastUserMessageAt = e.at;
@@ -159,6 +165,14 @@ export class State {
         break;
       case "note.removed":
         this.notes.delete(e.noteId);
+        break;
+      case "summary.updated":
+        this.summary = { text: e.text, at: e.at };
+        this.summarized = e.covered;
+        break;
+      case "summary.cleared":
+        this.summary = undefined;
+        this.summarized = e.covered;
         break;
       case "studied": {
         const { type: _t, id: _i, at, ...rest } = e;

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- Settings: 模型用量 shows, for each of the last seven days, how many model requests moqi sent (retries included), how many failed, how long an answer took on average and the tokens the model reported, for conversations and for background work (learning, reflecting, studying, summaries) apart. It counts from when moqi started and is not kept across restarts; the 测试连接 button is not counted.
+
+- Conversation: moqi sends the model the last 12 messages as before, and now also a short summary of the older ones. Once eight messages have fallen out of the window, a background request folds them (and the old summary) into a new summary, at most 800 characters. It comes with the other reference material, not in the system prompt. The Memory tab shows it as 摘要 and you can delete it; a deleted summary is not written again from the same messages. A failed request leaves the messages for the next time.
+
+- Chat: a 停止 button next to "moqi 在想" ends the conversation turn at once, also while moqi waits for your answer to a question (counted as no); the text goes back into the input box. The tool calls the model still had queued are not run. A turn stopped before it began leaves nothing in the conversation.
+- Model calls: one attempt gives up after 120 seconds. A rate limit (429), a server error (500, 502, 503, 504) or a broken connection is tried again, up to three attempts with a growing wait (a `Retry-After` of up to 10 seconds is respected); a timeout, a bad key or a bad request is not. The daemon log gets one line per attempt with the model, how long it took and the tokens used.
+- Prompt: what moqi knows about you and the notes it read in articles now come as a message after the system prompt, marked as reference and not instructions, so a memory another agent wrote or a note from an article no longer carries the system prompt's weight. The lessons moqi worked out stay in the system prompt.
+
 ## [0.7.2] - 2026-11-23
 
 - Fix: weather watches named after your city reported 北京. The config template no longer puts in 北京 as a placeholder; the weather tool takes a city (`place`) and looks it up, so "南京天气" watches carry 南京; and when moqi remembers you live somewhere other than the weather place, it offers once to switch, saving the new place when you accept.

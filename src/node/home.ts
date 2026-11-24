@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CodeRunner } from "../core/code.js";
-import { openAICompatible } from "../core/model.js";
+import { type ModelCall, openAICompatible } from "../core/model.js";
 import { Moqi, type MoqiOptions } from "../core/moqi.js";
 import type { Plugin } from "../core/plugin.js";
 import type { Answer, EventStore, Offer, Surface } from "../core/types.js";
@@ -21,6 +21,7 @@ import { macPlugin } from "./mac.js";
 import { McpHub, type McpServerStatus } from "./mcp-client.js";
 import { type MediaStore, mediaStore } from "./media.js";
 import { desktopNotifier, type Notifier } from "./notify.js";
+import { UsageLog } from "./usage.js";
 
 /** A typed answer to a question in the terminal. "a" means "以后都允许", only where the question offers it. */
 export function terminalAnswer(line: string, always: boolean): Answer {
@@ -36,6 +37,8 @@ export interface HomeOptions {
   /** Also told about every delivery, e.g. to print it in the terminal. */
   readonly onDeliver?: (offer: Offer, surface: Surface) => void;
   readonly confirm?: MoqiOptions["confirm"];
+  /** Told about every model attempt: how long it took, how many tokens, what went wrong. */
+  readonly onModelCall?: (call: ModelCall) => void;
   readonly extraPlugins?: readonly Plugin[];
   readonly lock?: boolean;
   /** Used for the model and the weather plugin. Tests pass a fake. */
@@ -81,6 +84,8 @@ export interface Home {
   reconfigure(config: Config): Promise<void>;
   /** Runs coding tasks; lives as long as the home, so a rebuild of moqi does not lose them. */
   readonly code: CodeRunner;
+  /** What the model calls took since this home was opened. */
+  readonly usage: UsageLog;
   /** Images the user sent and tools brought back. */
   readonly media: MediaStore;
   close(): void;
@@ -145,6 +150,11 @@ export function openHome(options: HomeOptions): Home {
     };
     const media = mediaStore(options.home);
     const hub = new McpHub(VERSION, media);
+    const usage = new UsageLog();
+    const onCall = (call: ModelCall) => {
+      usage.record(call);
+      options.onModelCall?.(call);
+    };
     // A finished task is reported to whichever moqi is current by then, after the jobs before it.
     const code = codeRunner({
       home: options.home,
@@ -154,7 +164,7 @@ export function openHome(options: HomeOptions): Home {
       ...(options.codeLaunch && { launch: options.codeLaunch }),
     });
     if (options.mcp !== false) hub.reconcile(config.mcp?.servers);
-    let moqi = build(config, store, options, notify, agents, hub, code, media, saveWeather);
+    let moqi = build(config, store, options, notify, agents, hub, code, media, saveWeather, onCall);
     moqi.recoverCode(); // tasks a previous run left running were cut short
     let chain: Promise<unknown> = Promise.resolve();
     const serial = <T>(job: () => Promise<T>): Promise<T> => {
@@ -166,14 +176,14 @@ export function openHome(options: HomeOptions): Home {
     hub.watch(() => {
       void serial(async () => {
         await moqi.idle();
-        moqi = build(config, store, options, notify, agents, hub, code, media, saveWeather);
+        moqi = build(config, store, options, notify, agents, hub, code, media, saveWeather, onCall);
       });
     });
     const reconfigure = (next: Config) =>
       serial(async () => {
         await moqi.idle();
         if (options.mcp !== false) hub.reconcile(next.mcp?.servers);
-        moqi = build(next, store, options, notify, agents, hub, code, media, saveWeather);
+        moqi = build(next, store, options, notify, agents, hub, code, media, saveWeather, onCall);
         config = next;
       });
     reconfigureLater = (next) => reconfigure(next);
@@ -191,6 +201,7 @@ export function openHome(options: HomeOptions): Home {
       reconfigure,
       mcpStatus: () => hub.status(),
       code,
+      usage,
       media,
       close: () => {
         hub.stop();
@@ -213,11 +224,16 @@ function build(
   code: CodeRunner,
   media: MediaStore,
   saveWeather: (place: WeatherPlace) => void,
+  onCall: (call: ModelCall) => void,
 ): Moqi {
   return new Moqi({
     store,
     ...(config.model && {
-      model: openAICompatible({ ...config.model, ...(options.fetch && { fetch: options.fetch }) }),
+      model: openAICompatible({
+        ...config.model,
+        ...(options.fetch && { fetch: options.fetch }),
+        onCall,
+      }),
     }),
     plugins: [
       ...pluginsFrom(config, options.fetch, process.platform, media, saveWeather),

@@ -167,7 +167,10 @@ function show(next, focus) {
     $(`view-${name}`).hidden = !on;
     if (on && focus) tab.focus();
   }
-  if (next === "settings" && !settingsLoaded) loadSettings();
+  if (next === "settings") {
+    if (!settingsLoaded) loadSettings();
+    loadUsage();
+  }
   if (next === "chat") {
     scrollToEnd();
     $("input").focus({ preventScroll: true });
@@ -418,7 +421,10 @@ function renderChat() {
     const last = state.messages.at(-1);
     if (!(last && last.role === "user" && last.text === sending.text))
       list.append(messageEl({ role: "user", text: sending.text, images: sending.images }));
-    list.append(h("div", { class: "msg moqi thinking", text: "moqi 在想" }));
+    list.append(
+      h("div", { class: "msg moqi thinking", text: "moqi 在想" }),
+      h("button", { type: "button", class: "btn ghost stop-chat", text: "停止", onclick: stopChat }),
+    );
   }
   $("input").disabled = !state.configured;
   renderAttach();
@@ -947,7 +953,7 @@ $("todo-form").addEventListener("submit", async (e) => {
 
 function renderMemory() {
   renderStudyStatus();
-  const key = JSON.stringify([state.facts, state.watches, state.lessons, state.notes]);
+  const key = JSON.stringify([state.facts, state.watches, state.lessons, state.notes, state.summary]);
   if (key === memoryKey) return; // keeps a half-done two-step delete as it is
   memoryKey = key;
   const facts = $("facts");
@@ -976,9 +982,24 @@ function renderMemory() {
   }
   const learned = $("learned");
   learned.replaceChildren();
-  if (state.lessons.length + state.notes.length === 0) {
+  if (state.lessons.length + state.notes.length === 0 && !state.summary) {
     learned.append(
       h("p", { class: "none", text: "还没学到什么。你不在的时候，它会复盘自己做得怎么样，也会读和你有关的文章。" }),
+    );
+  }
+  if (state.summary) {
+    learned.append(
+      h(
+        "div",
+        { class: "item" },
+        h(
+          "div",
+          { class: "item-main" },
+          h("p", { class: "item-text" }, h("span", { class: "tag", text: "摘要" }), state.summary.text),
+          h("p", { class: "item-meta" }, "更早的对话，不再原样发给模型 · ", timeOf(state.summary.at)),
+        ),
+        removeButton("删除这份摘要", "确定删除", () => api("POST", "/api/learned/remove", { id: "summary" })),
+      ),
     );
   }
   for (const l of state.lessons) {
@@ -1093,6 +1114,13 @@ function removeButton(label, confirmText, run, iconName = "trash") {
 /* Chat */
 
 const input = $("input");
+async function stopChat() {
+  try {
+    await api("POST", "/api/chat/stop", {});
+  } catch (error) {
+    toast(error.message);
+  }
+}
 
 function autosize() {
   input.style.height = "auto";
@@ -1118,8 +1146,15 @@ $("composer").addEventListener("submit", async (e) => {
   autosize();
   render();
   try {
-    await api("POST", "/api/chat", { text, ...(sending.images.length > 0 && { images: sending.images }) });
-    for (const a of sent) URL.revokeObjectURL(a.preview);
+    const done = await api("POST", "/api/chat", {
+      text,
+      ...(sending.images.length > 0 && { images: sending.images }),
+    });
+    if (done.stopped) {
+      toast("已停止");
+      if (!input.value) input.value = text;
+      attachments = sent; // kept, to send again
+    } else for (const a of sent) URL.revokeObjectURL(a.preview);
   } catch (error) {
     toast(error.message);
     if (!input.value) input.value = text;
@@ -1568,6 +1603,47 @@ function actionButton(text, primary, run) {
   return b;
 }
 
+function usageLine(label, k) {
+  if (k.attempts === 0) return null;
+  const answered = k.attempts - k.failed;
+  const parts = [`${label} ${k.attempts} 次`];
+  if (k.failed > 0) parts.push(`失败 ${k.failed}`);
+  if (answered > 0) {
+    const ms = k.answeredMs / answered;
+    parts.push(`平均 ${ms < 1000 ? `${Math.round(ms)} 毫秒` : `${(ms / 1000).toFixed(1)} 秒`}`);
+  }
+  if (k.counted > 0) parts.push(`${k.promptTokens.toLocaleString()} + ${k.completionTokens.toLocaleString()} token`);
+  return parts.join(" · ");
+}
+async function loadUsage() {
+  const list = $("usage");
+  try {
+    const { days } = await api("GET", "/api/usage");
+    list.replaceChildren();
+    if (days.length === 0) list.append(h("p", { class: "none", text: "还没调用过模型。" }));
+    days.forEach((d, i) => {
+      const lines = [usageLine("对话", d.chat), usageLine("后台", d.background)].filter(Boolean);
+      list.append(
+        h(
+          "div",
+          { class: "item" },
+          h(
+            "div",
+            { class: "item-main" },
+            h("p", { class: "item-text", text: i === 0 && d.day === localDay() ? "今天" : d.day }),
+            ...lines.map((text) => h("p", { class: "item-meta", text })),
+          ),
+        ),
+      );
+    });
+  } catch (error) {
+    list.replaceChildren(h("p", { class: "none", text: error.message }));
+  }
+}
+function localDay() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 const POLICY_LABEL = { ask: "每次都问", auto: "放开（读过外部内容时仍会问）", normal: "普通" };
 
 async function loadDangerTools() {

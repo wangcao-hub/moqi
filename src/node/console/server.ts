@@ -168,6 +168,8 @@ export async function startConsole(options: ConsoleOptions): Promise<Console> {
   );
   const expected = Buffer.from(options.token);
   let chatting = 0;
+  /** The chats on their way (running or queued), so the page's stop button can end them. */
+  const chats = new Set<AbortController>();
   let port = 0;
 
   /** The saved key, only for the endpoint it was saved with: switching providers must never send it elsewhere. */
@@ -309,6 +311,7 @@ export async function startConsole(options: ConsoleOptions): Promise<Console> {
         question: asker.pending() ?? null,
         thinking: moqi.isReflecting,
         studying: moqi.isStudying,
+        summary: moqi.state.summary ?? null,
         lessons: [...moqi.state.lessons.values()].reverse(),
         notes: [...moqi.state.notes.values()].reverse().slice(0, 30),
         lastStudy: moqi.state.studies.at(-1) ?? null,
@@ -361,23 +364,34 @@ export async function startConsole(options: ConsoleOptions): Promise<Console> {
       if (!images.every((id) => typeof id === "string" && home.media.read(id)))
         throw new HttpError(400, "有一张图片找不到了，重新加一下");
       if (!home.moqi.model) throw new HttpError(409, "还没配置模型，先去设置里接一个");
+      const stop = new AbortController();
+      chats.add(stop);
       chatting++;
       try {
         return {
           reply: await home.serial(() =>
-            home.moqi.chat(fromAgent(text, body.from), undefined, {
+            home.moqi.chat(fromAgent(text, body.from), stop.signal, {
               fromAgent: byAgent(body.from),
               ...(images.length > 0 && { images: images as string[] }),
             }),
           ),
         };
       } catch (error) {
+        if (stop.signal.aborted) return { reply: "", stopped: true };
         throw new HttpError(502, `模型出错了：${message(error)}`);
       } finally {
+        chats.delete(stop);
         chatting--;
       }
     },
-
+    "POST /api/chat/stop": () => {
+      if (chats.size === 0) throw new HttpError(409, "没有在进行的对话");
+      for (const stop of chats) stop.abort("stop");
+      // A question the conversation is waiting on would hold the stop back until it times out.
+      const question = asker.pending();
+      if (question) asker.answer(question.id, false);
+      return { ok: true };
+    },
     "POST /api/answer": async (body) => {
       const id = str(body.id, "id");
       const text = str(body.text, "text");
@@ -606,6 +620,7 @@ export async function startConsole(options: ConsoleOptions): Promise<Console> {
       return { message };
     },
 
+    "GET /api/usage": () => ({ since: home.usage.since, days: home.usage.recent() }),
     "GET /api/tools": () => ({
       tools: home.moqi.dangerousTools(),
       ordinary: home.moqi.ordinaryTools().map((t) => ({ ...t, label: ORDINARY_LABELS[t.name] ?? t.name })),

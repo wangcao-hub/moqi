@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { activeFacts } from "../core/memory.js";
+import type { ModelCall } from "../core/model.js";
 import { describeSchedule } from "../core/schedule.js";
 import type { Offer, Surface, Verdict } from "../core/types.js";
 import { moqiHome, writeTemplate } from "./config.js";
@@ -39,6 +40,12 @@ function show(offer: Offer, surface: Surface): string {
   return `${head} ${offer.title}${offer.body ? `\n  ${offer.body.split("\n").join("\n  ")}` : ""}${action}`;
 }
 
+/** One line per model attempt, for the daemon log. */
+function modelLine(c: ModelCall): string {
+  const what = `${c.model} ${c.purpose === "chat" ? "对话" : "后台"} 第 ${c.attempt} 次 ${c.ms}ms`;
+  if (!c.ok) return `moqi: 模型失败 ${what}：${c.error ?? ""}`;
+  return `moqi: 模型 ${what}${c.promptTokens !== undefined ? ` ${c.promptTokens}+${c.completionTokens ?? 0} tokens` : ""}`;
+}
 function heartbeat(home: Home, onError: (e: unknown) => void): () => void {
   let busy = false;
   const beat = async () => {
@@ -218,6 +225,7 @@ async function daemon(): Promise<void> {
     home: dir,
     onDeliver: (o, s) => console.log(show(o, s)),
     confirm: (q, d, c) => asker.ask(q, d, c),
+    onModelCall: (c) => console.error(modelLine(c)),
   });
   const stopBeat = heartbeat(home, (e) => console.error(`moqi: ${e instanceof Error ? e.message : String(e)}`));
   const token = consoleToken(dir);

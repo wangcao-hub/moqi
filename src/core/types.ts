@@ -222,6 +222,10 @@ export type EventBody =
   | { type: "lesson.removed"; lessonId: string }
   | { type: "note.added"; note: Note }
   | { type: "note.removed"; noteId: string }
+  /** The older part of the conversation, in a few sentences. `covered`: how many messages, counted from the first, it stands for. */
+  | { type: "summary.updated"; text: string; covered: number }
+  /** The user deleted the summary; `covered` keeps what it stood for from being summarized again. */
+  | { type: "summary.cleared"; covered: number }
   | {
       type: "studied";
       mode: "lessons" | "world";

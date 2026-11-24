@@ -328,6 +328,9 @@ svg {
   color: var(--faint);
 }
 
+.stop-chat {
+  align-self: flex-start;
+}
 .thinking::after {
   content: "…";
   animation: blink 1.2s steps(4, end) infinite;

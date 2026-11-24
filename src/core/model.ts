@@ -65,7 +65,31 @@ export interface OpenAICompatibleOptions {
    * strength (Muse Glimmer, gpt-oss): background work then uses the lightest setting.
    */
   readonly effort?: "low" | "medium" | "high";
+  /** How long one attempt may take before it is given up on. Default 120 seconds. */
+  readonly timeoutMs?: number;
+  /** Wait before the first retry, doubled for each one after it. Default 500 ms; tests make it small. */
+  readonly retryDelayMs?: number;
+  /** Told about every attempt, e.g. to log how long it took and how many tokens it used. */
+  readonly onCall?: (call: ModelCall) => void;
 }
+
+export interface ModelCall {
+  readonly model: string;
+  /** "background" for the quick side requests (`reasoning: "off"`): learning, reflecting, studying. */
+  readonly purpose: "chat" | "background";
+  readonly attempt: number;
+  readonly ms: number;
+  readonly ok: boolean;
+  readonly promptTokens?: number;
+  readonly completionTokens?: number;
+  readonly error?: string;
+}
+
+const TIMEOUT_MS = 120_000;
+const ATTEMPTS = 3;
+/** Rate limits and server trouble pass; anything else (bad key, bad request) would fail the same way again. */
+const RETRY_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const RETRY_AFTER_MAX_MS = 10_000;
 
 /** OpenAI-compatible /chat/completions with function calling: OpenAI, DeepSeek, Qwen, Ollama, vLLM, ... */
 export function openAICompatible(options: OpenAICompatibleOptions): ChatModel {
@@ -74,47 +98,83 @@ export function openAICompatible(options: OpenAICompatibleOptions): ChatModel {
   return {
     id: `openai-compatible:${options.model}`,
     async chat(request) {
-      const response = await doFetch(url, {
-        method: "POST",
-        ...(request.signal && { signal: request.signal }),
-        headers: {
-          "content-type": "application/json",
-          ...(options.apiKey && { authorization: `Bearer ${options.apiKey}` }),
-        },
-        body: JSON.stringify({
-          model: options.model,
-          messages: withNoThink(request, options.noThink === true).map(toWire),
-          ...(request.tools?.length && {
-            tools: request.tools.map((t) => ({
-              type: "function",
-              function: { name: t.name, description: t.description, parameters: t.parameters },
-            })),
-          }),
-          ...(request.temperature !== undefined && { temperature: request.temperature }),
-          ...(request.maxTokens !== undefined && { max_tokens: request.maxTokens }),
-          ...(request.json && { response_format: { type: "json_object" } }),
-          ...(request.reasoning === "off" && options.effort && { reasoning_effort: options.effort }),
+      const body = JSON.stringify({
+        model: options.model,
+        messages: withNoThink(request, options.noThink === true).map(toWire),
+        ...(request.tools?.length && {
+          tools: request.tools.map((t) => ({
+            type: "function",
+            function: { name: t.name, description: t.description, parameters: t.parameters },
+          })),
         }),
+        ...(request.temperature !== undefined && { temperature: request.temperature }),
+        ...(request.maxTokens !== undefined && { max_tokens: request.maxTokens }),
+        ...(request.json && { response_format: { type: "json_object" } }),
+        ...(request.reasoning === "off" && options.effort && { reasoning_effort: options.effort }),
       });
-      if (!response.ok)
-        throw new Error(`${url} responded ${response.status}: ${(await response.text()).slice(0, 300)}`);
-      const body = (await response.json()) as {
-        choices?: {
-          message?: {
-            content?: string | null;
-            tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[];
-          };
-        }[];
-      };
-      const message = body.choices?.[0]?.message;
-      return {
-        content: stripThinking(message?.content ?? ""),
-        toolCalls: (message?.tool_calls ?? []).flatMap((c, i) =>
-          c.function?.name
-            ? [{ id: c.id ?? `call_${i}`, name: c.function.name, arguments: c.function.arguments ?? "{}" }]
-            : [],
-        ),
-      };
+      const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
+      const report = (c: Omit<ModelCall, "model" | "purpose">) =>
+        options.onCall?.({ model: options.model, purpose: request.reasoning === "off" ? "background" : "chat", ...c });
+      for (let attempt = 1; ; attempt++) {
+        const started = Date.now();
+        const timeout = AbortSignal.timeout(timeoutMs);
+        const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
+        let failure: Error;
+        let retry = false;
+        let waitMs = (options.retryDelayMs ?? 500) * 2 ** (attempt - 1);
+        try {
+          const response = await doFetch(url, {
+            method: "POST",
+            signal,
+            headers: {
+              "content-type": "application/json",
+              ...(options.apiKey && { authorization: `Bearer ${options.apiKey}` }),
+            },
+            body,
+          });
+          if (response.ok) {
+            const reply = (await response.json()) as {
+              choices?: {
+                message?: {
+                  content?: string | null;
+                  tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[];
+                };
+              }[];
+              usage?: { prompt_tokens?: number; completion_tokens?: number };
+            };
+            report({
+              attempt,
+              ms: Date.now() - started,
+              ok: true,
+              ...(reply.usage?.prompt_tokens !== undefined && { promptTokens: reply.usage.prompt_tokens }),
+              ...(reply.usage?.completion_tokens !== undefined && { completionTokens: reply.usage.completion_tokens }),
+            });
+            const message = reply.choices?.[0]?.message;
+            return {
+              content: stripThinking(message?.content ?? ""),
+              toolCalls: (message?.tool_calls ?? []).flatMap((c, i) =>
+                c.function?.name
+                  ? [{ id: c.id ?? `call_${i}`, name: c.function.name, arguments: c.function.arguments ?? "{}" }]
+                  : [],
+              ),
+            };
+          }
+          failure = new Error(`${url} responded ${response.status}: ${(await response.text()).slice(0, 300)}`);
+          retry = RETRY_STATUS.has(response.status);
+          const after = Number(response.headers.get("retry-after"));
+          if (retry && after > 0) waitMs = Math.min(after * 1000, RETRY_AFTER_MAX_MS);
+        } catch (error) {
+          if (request.signal?.aborted) throw error; // the caller stopped: no retry, no report
+          if (timeout.aborted) failure = new Error(`模型 ${Math.round(timeoutMs / 1000)} 秒没有回应（${url}）`);
+          else {
+            failure = error instanceof Error ? error : new Error(String(error));
+            retry = true; // the connection broke, or the answer did not arrive whole
+          }
+        }
+        report({ attempt, ms: Date.now() - started, ok: false, error: failure.message });
+        if (!retry || attempt >= ATTEMPTS) throw failure;
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
     },
   };
 }

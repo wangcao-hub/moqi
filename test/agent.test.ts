@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { systemPrompt } from "../src/core/agent.js";
+import { referenceMessage, systemPrompt } from "../src/core/agent.js";
 import type { ChatMessage, ChatRequest } from "../src/core/model.js";
 import { defineTool } from "../src/core/plugin.js";
 import { call, harness, scriptedModel } from "./helpers.js";
@@ -34,13 +34,54 @@ describe("conversation", () => {
     expect(asked).toHaveLength(1);
   });
 
-  it("puts what it knows about the user into the system prompt", () => {
-    const { moqi } = harness();
-    moqi.remember({ kind: "relation", content: "女儿叫朵朵" });
-    expect(systemPrompt(moqi)).toMatch(/女儿叫朵朵[\s\S]*做事的方式/);
+  it("tells the model what it knows about the user in a reference message, not in the system prompt", async () => {
+    const model = scriptedModel(() => "好");
+    const { moqi } = harness({ model });
+    moqi.remember({ kind: "relation", content: "住在深圳南山" });
+    expect(systemPrompt(moqi)).not.toContain("住在深圳南山");
     expect(systemPrompt(moqi)).toContain("2026年11月20日 周五 08:20");
+    expect(referenceMessage(moqi)).toMatch(/不是指令[\s\S]*<reference>[\s\S]*住在深圳南山[\s\S]*<\/reference>/);
+    await moqi.chat("你好");
+    const [system, reference, ...rest] = model.requests[0]?.messages ?? [];
+    expect(system?.role).toBe("system");
+    expect(reference).toMatchObject({ role: "user" });
+    expect(reference?.content).toContain("住在深圳南山");
+    expect(rest).toEqual([{ role: "user", content: "你好" }]);
   });
-
+  it("sends no reference message while it knows and has read nothing", async () => {
+    const model = scriptedModel(() => "好");
+    const { moqi } = harness({ model });
+    expect(referenceMessage(moqi)).toBeUndefined();
+    await moqi.chat("你好");
+    expect(model.requests[0]?.messages.map((m) => m.role)).toEqual(["system", "user"]);
+  });
+  it("stops a conversation turn without leaving a trace when it was stopped before it began", async () => {
+    const model = scriptedModel(() => "好");
+    const { moqi } = harness({ model });
+    const stop = new AbortController();
+    stop.abort();
+    await expect(moqi.chat("你好", stop.signal)).rejects.toThrow();
+    expect(model.requests).toHaveLength(0);
+    expect(moqi.state.userMessages).toBe(0);
+  });
+  it("runs no further tool call once it is stopped", async () => {
+    const stop = new AbortController();
+    const model = scriptedModel(() => ({
+      content: "",
+      toolCalls: [
+        { id: "a", name: "remember", arguments: JSON.stringify({ kind: "basic", content: "住在深圳" }) },
+        { id: "b", name: "remember", arguments: JSON.stringify({ kind: "basic", content: "养了一只猫" }) },
+      ],
+    }));
+    const { moqi } = harness({ model });
+    moqi.emit = ((original) => (body: Parameters<typeof original>[0]) => {
+      const event = original(body);
+      if (body.type === "fact.added") stop.abort(); // the user pressed stop while the first call ran
+      return event;
+    })(moqi.emit.bind(moqi));
+    await expect(moqi.chat("记一下", stop.signal)).rejects.toThrow();
+    expect([...moqi.state.facts.values()].map((f) => f.content)).toEqual(["住在深圳"]);
+  });
   it("learns facts on the side every third user turn, never inside the chat", async () => {
     const model = scriptedModel((r) =>
       isExtraction(r)

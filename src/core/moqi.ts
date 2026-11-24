@@ -1,4 +1,4 @@
-import { chatTurn, learn } from "./agent.js";
+import { AGENT, chatTurn, learn } from "./agent.js";
 import { guarded, levelOf, needsConfirmation, promotionDue, rank } from "./autonomy.js";
 import { type Briefing, composeBriefing } from "./briefing.js";
 import { type CodeResult, type CodeRunner, codeOffer, codeTools } from "./code.js";
@@ -277,6 +277,13 @@ export class Moqi {
 
   /** The user deletes something moqi learned. */
   forgetLearned(id: string): string {
+    if (id === "summary" && this.state.summary) {
+      this.emit({
+        type: "summary.cleared",
+        covered: Math.max(this.state.summarized, this.state.messageCount - AGENT.historyMessages),
+      });
+      return "这份对话摘要删掉了";
+    }
     if (this.state.lessons.has(id)) {
       this.emit({ type: "lesson.removed", lessonId: id });
       return "这条经验删掉了";
