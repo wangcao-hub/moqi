@@ -100,7 +100,7 @@ createAgent({
 
 - `fileStore(join(家目录, "runs"), { durability: "none" })`，一个 run 一个文件，传给 `onTrace`。不做 fsync，理由同上。第一次写失败时往 stderr 打一行，之后不再重复。
 - 清理：家进程启动时一次，之后每天一次。`store.list()` 里 `updatedAt` 在 30 天前、状态是 `completed`、`failed` 或 `interrupted` 的 run，调 `store.remove(runId)` 删掉；`running` 和 `paused` 不动。
-- trace 和事件日志在同一个家目录下，敏感程度一样，不另做处理。
+- trace 比事件日志更敏感：它还记下工具返回的内容（文件、剪贴板、网页）和带记忆的系统提示词。`runs/` 目录建成只有用户自己能读（0700），新建的家目录也是。
 
 ### 4.3 托管事务
 
