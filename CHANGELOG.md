@@ -7,6 +7,12 @@
 - After six rounds of tools the last model call still goes without tools. Changed: invalid tool arguments and unknown tools are answered in English (`Invalid arguments: ...`, `No tool named "x"`), at most 32 tool calls run per reply, and the model can no longer call hidden tools.
 - The image check reads the status of a refusal (400, 413, 415, 422) instead of matching the error text.
 - Depends on taugraph `^0.4.1`. A watch whose check fails now waits 250–500 ms before its one retry.
+- An aborted turn throws taugraph's `TaugraphError` with code `ABORTED`.
+- Tool names must match `^[A-Za-z0-9_-]{1,64}$` (what OpenAI and the other providers accept); `new Moqi` throws for a plugin tool that does not. Built-in, MCP and A2A tool names already do.
+- In tool loops, `openAICompatible` sends the model's own reasoning back as `reasoning_content` (DeepSeek V4 and Kimi need it); `sendReasoning: false` in the code or in `config.json` turns it off for endpoints that refuse it.
+- Model errors are taugraph's `HTTPError` with a numeric `status`; the message keeps 500 characters of the response (was 300).
+- `moqi.model` is the given model wrapped to read image references; `media.load` is called for each model request that carries an image (up to 7 per turn).
+- Traces under `~/.moqi/runs/` are readable only by you, and a new moqi home is created readable only by you.
 
 ## [0.7.2] - 2026-11-23
 
