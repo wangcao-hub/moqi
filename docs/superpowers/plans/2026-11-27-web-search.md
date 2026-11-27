@@ -59,11 +59,13 @@ Spec: `docs/superpowers/specs/2026-11-27-web-search-design.md`.
 ### Task 1: Safe page download
 
 **Files:**
+
 - Create: `src/plugins/page.ts`
 - Modify: `src/plugins/news.ts` (the `function decode` line, about line 38)
 - Test: `test/page.test.ts`
 
 **Interfaces:**
+
 - Consumes: `articleText(html: string): string` and `decode(text: string): string` from `src/plugins/news.ts` (`decode` becomes exported in this task).
 - Produces:
   - `PAGE: { maxBytes: 2_000_000, timeoutMs: 20_000, maxRedirects: 5 }`
@@ -423,11 +425,13 @@ git commit -m "feat(search): download a public page safely"
 ### Task 2: Search services and the two tools
 
 **Files:**
+
 - Create: `src/plugins/search.ts`
 - Modify: `src/plugins/index.ts`
 - Test: `test/search.test.ts`
 
 **Interfaces:**
+
 - Consumes: `fetchPage(url: string, doFetch: typeof fetch): Promise<PageText>` from `src/plugins/page.ts` (Task 1).
 - Produces (all exported from `src/plugins/search.ts`):
   - `type SearchProvider = "deepseek" | "baidu"`
@@ -593,10 +597,9 @@ describe("Baidu AI search", () => {
   it("reads a page by downloading it, only from public addresses, without the search key", async () => {
     const n = net((url) =>
       url === "https://news.example/b"
-        ? new Response(
-            "<html><head><title>百度来的</title></head><body><article><p>正文</p></article></body></html>",
-            { headers: { "content-type": "text/html" } },
-          )
+        ? new Response("<html><head><title>百度来的</title></head><body><article><p>正文</p></article></body></html>", {
+            headers: { "content-type": "text/html" },
+          })
         : new Response("no", { status: 404 }),
     );
     const service = searchService({ provider: "baidu", apiKey: "k", fetch: n.fetch });
@@ -642,7 +645,12 @@ describe("web_search and web_read", () => {
 
   it("checks the arguments before searching", async () => {
     const { moqi, sent } = tools(() => Response.json({ results: [] }));
-    for (const args of [{ query: "" }, { query: "字".repeat(129) }, { query: "x", count: 0 }, { query: "x", count: 11 }])
+    for (const args of [
+      { query: "" },
+      { query: "字".repeat(129) },
+      { query: "x", count: 0 },
+      { query: "x", count: 11 },
+    ])
       expect(await moqi.callTool("web_search", args, { byUser: true })).toMatch(/^参数不对/);
     expect(await moqi.callTool("web_read", { url: "not a url" }, { byUser: true })).toMatch(/^参数不对/);
     expect(sent).toEqual([]);
@@ -839,9 +847,16 @@ function deepseek(apiKey: string, doFetch: typeof fetch): SearchService {
       return (Array.isArray(data.results) ? data.results : []).flatMap((r) => hitOf(r, ["summary", "snippet"]));
     },
     async read(url) {
-      const data = await postJson(doFetch, "DeepSeek 读网页", `${DEEPSEEK}/fetch`, auth, { url }, {
-        404: "这个网页读不出来",
-      });
+      const data = await postJson(
+        doFetch,
+        "DeepSeek 读网页",
+        `${DEEPSEEK}/fetch`,
+        auth,
+        { url },
+        {
+          404: "这个网页读不出来",
+        },
+      );
       return { title: text(data.title), text: text(data.content) };
     },
   };
@@ -883,8 +898,7 @@ export function formatHits(hits: readonly SearchHit[]): string {
   const blocks: string[] = [];
   let size = 0;
   for (const [i, h] of hits.entries()) {
-    const summary =
-      h.summary.length > SEARCH.summaryChars ? `${h.summary.slice(0, SEARCH.summaryChars)}…` : h.summary;
+    const summary = h.summary.length > SEARCH.summaryChars ? `${h.summary.slice(0, SEARCH.summaryChars)}…` : h.summary;
     const block = [`${i + 1}. ${h.title.slice(0, 200)}`, h.url, h.date, summary].filter(Boolean).join("\n");
     if (blocks.length > 0 && size + block.length > SEARCH.resultChars) break;
     blocks.push(block.slice(0, SEARCH.resultChars));
@@ -976,6 +990,7 @@ git commit -m "feat(search): web_search and web_read through DeepSeek or Baidu"
 ### Task 3: Turning search on: config, home and the chat prompt
 
 **Files:**
+
 - Modify: `src/core/plugin.ts` (the `Plugin` interface, end of file)
 - Modify: `src/core/agent.ts` (`systemPrompt`, about line 36)
 - Modify: `src/plugins/search.ts` (`searchPlugin` gets `guide`)
@@ -984,6 +999,7 @@ git commit -m "feat(search): web_search and web_read through DeepSeek or Baidu"
 - Test: `test/search.test.ts` (new `describe` at the end), `test/node.test.ts` (new `describe` after `describe("config", …)`)
 
 **Interfaces:**
+
 - Consumes: `searchPlugin(options: SearchOptions): Plugin`, `SEARCH.guide`, `type SearchProvider` from `src/plugins/search.ts` (Task 2).
 - Produces:
   - `Plugin.guide?: string` in `src/core/plugin.ts`: one line for 「做事的方式」.
@@ -1030,9 +1046,10 @@ describe("web search setup", () => {
     expect(searchSetup(config({ model: { ...deepseek, baseURL: "https://api.deepseek.com" } }))).toMatchObject({
       on: true,
     });
-    expect(
-      searchSetup(config({ model: { ...deepseek, baseURL: "https://api.deepseek.com.evil.test/v1" } })),
-    ).toEqual({ on: false, provider: "deepseek" });
+    expect(searchSetup(config({ model: { ...deepseek, baseURL: "https://api.deepseek.com.evil.test/v1" } }))).toEqual({
+      on: false,
+      provider: "deepseek",
+    });
     expect(searchSetup(config({ model: local }))).toEqual({ on: false, provider: "deepseek" });
     expect(searchSetup(config({}))).toEqual({ on: false, provider: "deepseek" });
   });
@@ -1221,23 +1238,28 @@ export function searchSetup(config: Config): SearchSetup {
   if (!search && !deepseekModel) return { on: false, provider };
   const apiKey = search?.apiKey || (provider === "deepseek" && deepseekModel ? config.model?.apiKey : undefined);
   if (apiKey) return { on: true, provider, apiKey };
-  return { on: false, provider, problem: provider === "deepseek" ? "需要填 DeepSeek 的 key" : "需要填 AppBuilder API Key" };
+  return {
+    on: false,
+    provider,
+    problem: provider === "deepseek" ? "需要填 DeepSeek 的 key" : "需要填 AppBuilder API Key",
+  };
 }
 ```
 
 - [ ] **Step 5: Register the plugin in the home**
 
 In `src/node/home.ts`:
+
 - Add `import { searchPlugin } from "../plugins/search.js";` after the `news.js` import.
 - Change the config import to `import { type Config, expandHome, loadConfig, readConfigFile, saveConfig, searchSetup } from "./config.js";`.
 - In `pluginsFrom`, right after the `newsPlugin` line, add:
 
 ```ts
-  const search = searchSetup(config);
-  if (search.on)
-    plugins.push(
-      searchPlugin({ provider: search.provider, apiKey: search.apiKey, ...(fetchImpl && { fetch: fetchImpl }) }),
-    );
+const search = searchSetup(config);
+if (search.on)
+  plugins.push(
+    searchPlugin({ provider: search.provider, apiKey: search.apiKey, ...(fetchImpl && { fetch: fetchImpl }) }),
+  );
 ```
 
 - [ ] **Step 6: Run the tests**
@@ -1258,12 +1280,14 @@ git commit -m "feat(search): on by default with DeepSeek's model, and a prompt l
 ### Task 4: The 「联网搜索」 settings section
 
 **Files:**
+
 - Modify: `src/node/console/server.ts` (imports; `GET /api/config` and `POST /api/config` around lines 675–743; a new route after `POST /api/model/test`)
 - Modify: `src/node/console/assets/index.html` (a new `fieldset` after the 新闻 one, before 「打扰规则」)
 - Modify: `src/node/console/assets/app.js` (state near line 61, handlers after the `mac-on` listener near line 1315, `loadSettings`, the settings `submit` handler)
 - Test: `test/console.test.ts` (`fakeNet`, and a new `describe` after `describe("console", …)`)
 
 **Interfaces:**
+
 - Consumes: `searchService(options: SearchOptions): SearchService` from `src/plugins/search.ts` (Task 2); `isDeepSeekModel(config: Config): boolean`, `searchSetup(config: Config): SearchSetup` and `Config.search` from `src/node/config.ts` (Task 3).
 - Produces (HTTP, for the page):
   - `GET /api/config` drops `config.search` and adds `search: { enabled: boolean, provider: "deepseek" | "baidu", saved: boolean, hasKey: boolean, problem: string | null }` and `env.searchKey: boolean`.
@@ -1293,7 +1317,13 @@ describe("console: web search", () => {
   it("is on with DeepSeek's model, keeps the search key from the page, and only for the same service", async () => {
     const { dir, home, api } = await start({ model: { ...DEEPSEEK, apiKey: "sk-model" }, briefingAt: null });
     let got = await api("GET", "/api/config");
-    expect(got.data.search).toEqual({ enabled: true, provider: "deepseek", saved: false, hasKey: false, problem: null });
+    expect(got.data.search).toEqual({
+      enabled: true,
+      provider: "deepseek",
+      saved: false,
+      hasKey: false,
+      problem: null,
+    });
     expect(got.data.env.searchKey).toBe(false);
     expect(home.moqi.tool("web_search")).toBeDefined();
 
@@ -1367,6 +1397,7 @@ Expected: FAIL: `got.data.search` is undefined, and `/api/search/test` answers 4
 - [ ] **Step 3: Server: keep the key off the page, keep it on save, and add the test route**
 
 In `src/node/console/server.ts`:
+
 - Add `import { searchService } from "../../plugins/search.js";` after the `news.js` import.
 - Change the config import to `import { ConfigSchema, expandHome, isDeepSeekModel, loadConfig, readConfigFile, saveConfig, searchSetup } from "../config.js";`.
 
@@ -1405,16 +1436,15 @@ Replace the whole `"GET /api/config"` route with:
 In `"POST /api/config"`, right after the line `if (raw.a2a === undefined && file.a2a) raw.a2a = file.a2a;`, add:
 
 ```ts
-      // The search key, like the model's: a blank field keeps the saved one, but only for the same service.
-      const search = raw.search as Record<string, unknown> | undefined;
-      if (search && typeof search === "object") {
-        const old = file.search;
-        if (!search.apiKey && old?.apiKey && old.provider === (search.provider ?? "deepseek"))
-          search.apiKey = old.apiKey;
-        if (search.apiKey === "") delete search.apiKey;
-      }
-      // A page that leaves search out keeps what the file says; without a section, search follows the model.
-      if (raw.search === undefined && file.search) raw.search = file.search;
+// The search key, like the model's: a blank field keeps the saved one, but only for the same service.
+const search = raw.search as Record<string, unknown> | undefined;
+if (search && typeof search === "object") {
+  const old = file.search;
+  if (!search.apiKey && old?.apiKey && old.provider === (search.provider ?? "deepseek")) search.apiKey = old.apiKey;
+  if (search.apiKey === "") delete search.apiKey;
+}
+// A page that leaves search out keeps what the file says; without a section, search follows the model.
+if (raw.search === undefined && file.search) raw.search = file.search;
 ```
 
 After the whole `"POST /api/model/test"` route, add:
@@ -1540,6 +1570,7 @@ $("s-test").addEventListener("click", async (e) => {
 ```
 
 In `loadSettings`:
+
 - Change the first line of the `try` to
   `const { config, hasKey: saved, env, newsPresets: feeds, platform, search } = await api("GET", "/api/config");`
 - After `if (env.apiKey) notes.push("API Key 来自环境变量 MOQI_API_KEY。");` add
@@ -1547,15 +1578,15 @@ In `loadSettings`:
 - After the line `showNews(config.news ? config.news.feeds : null);` add:
 
 ```js
-    searchInfo = search;
-    searchTouched = false;
-    $("s-on").checked = search.enabled;
-    $("s-provider").value = search.provider;
-    $("s-key").value = "";
-    searchHint();
-    toggleSearch();
-    if (search.enabled && search.problem) setResult($("s-test-result"), search.problem, "bad");
-    else setResult($("s-test-result"), "");
+searchInfo = search;
+searchTouched = false;
+$("s-on").checked = search.enabled;
+$("s-provider").value = search.provider;
+$("s-key").value = "";
+searchHint();
+toggleSearch();
+if (search.enabled && search.problem) setResult($("s-test-result"), search.problem, "bad");
+else setResult($("s-test-result"), "");
 ```
 
 In the settings `submit` handler, add this property to the `config` object, after `news: { feeds },`:
@@ -1585,9 +1616,11 @@ git commit -m "feat(console): 联网搜索 settings with a 试一下 button"
 ### Task 5: Docs and the final check
 
 **Files:**
+
 - Modify: `README.md`, `README.zh-CN.md`, `docs/design.md`, `CHANGELOG.md`
 
 **Interfaces:**
+
 - Consumes: the behaviour of Tasks 1–4 as described in Global Constraints.
 - Produces: documentation only.
 
@@ -1598,7 +1631,7 @@ Markdown tables in both READMEs are padded so the columns line up. Before editin
 In `## Abilities: the web, your files, your Mac`, add this row to the table after the Browser row:
 
 ```markdown
-| Web search    | Search the web and read pages in the background, without the browser and without asking                     | Through DeepSeek's Search and Fetch API or Baidu AI Search. What it finds counts as outside content, so a dangerous action after it is asked again. When moqi downloads a page itself (with Baidu), it refuses this computer and the local network and checks every redirect |
+| Web search | Search the web and read pages in the background, without the browser and without asking | Through DeepSeek's Search and Fetch API or Baidu AI Search. What it finds counts as outside content, so a dangerous action after it is asked again. When moqi downloads a page itself (with Baidu), it refuses this computer and the local network and checks every redirect |
 ```
 
 and this paragraph after the table:
@@ -1610,7 +1643,7 @@ Web search is on by itself when your model is DeepSeek's (`api.deepseek.com`): i
 In `## Configuration`, add `"search": { "enabled": true, "provider": "deepseek" },` to the example JSON after the `"news"` line, this row to the table after `news`:
 
 ```markdown
-| `search`              | on with DeepSeek's model | Web search: `enabled`, `provider` (`"deepseek"` or `"baidu"`), optional `apiKey`. Without the section, search is on when the model is `api.deepseek.com` and uses its key; `"enabled": false` keeps it off for good. Baidu needs its own key. |
+| `search` | on with DeepSeek's model | Web search: `enabled`, `provider` (`"deepseek"` or `"baidu"`), optional `apiKey`. Without the section, search is on when the model is `api.deepseek.com` and uses its key; `"enabled": false` keeps it off for good. Baidu needs its own key. |
 ```
 
 and replace the environment line with:
@@ -1642,7 +1675,7 @@ In `## Status and limits`, add this item after the macOS item:
 In `## 能力包：网页、文件、你的 Mac`, add after the 浏览器 row:
 
 ```markdown
-| 联网搜索   | 在后台搜网页、读网页，不开浏览器，不用你点确认                                     | 通过 DeepSeek 的 Search 和 Fetch 接口，或百度 AI 搜索。搜到的内容算外部内容，之后的危险动作照样要问。用百度时 moqi 自己下载网页，不读本机和局域网的地址，每次跳转都重新检查 |
+| 联网搜索 | 在后台搜网页、读网页，不开浏览器，不用你点确认 | 通过 DeepSeek 的 Search 和 Fetch 接口，或百度 AI 搜索。搜到的内容算外部内容，之后的危险动作照样要问。用百度时 moqi 自己下载网页，不读本机和局域网的地址，每次跳转都重新检查 |
 ```
 
 and this paragraph after the table:
@@ -1654,7 +1687,7 @@ and this paragraph after the table:
 In `## 配置`, add `"search": { "enabled": true, "provider": "deepseek" },` to the example JSON after the `"news"` line, this row after `news`:
 
 ```markdown
-| `search`              | 模型是 DeepSeek 时开    | 联网搜索：`enabled`、`provider`（`"deepseek"` 或 `"baidu"`），可选 `apiKey`。没有这一节时，模型接口是 `api.deepseek.com` 就打开并用它的 key；`"enabled": false` 之后一直关着。百度要单独的 key |
+| `search` | 模型是 DeepSeek 时开 | 联网搜索：`enabled`、`provider`（`"deepseek"` 或 `"baidu"`），可选 `apiKey`。没有这一节时，模型接口是 `api.deepseek.com` 就打开并用它的 key；`"enabled": false` 之后一直关着。百度要单独的 key |
 ```
 
 and replace the environment line with:
