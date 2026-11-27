@@ -37,6 +37,14 @@ import { runWatch } from "./watch.js";
 /** Read tools that make no sense on a schedule: they list moqi's own state. */
 const UNWATCHABLE = ["list_memories", "watch_list", "todo_list"];
 
+/** Tool names OpenAI and the other providers accept; taugraph/agent refuses any other. */
+const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+const isThenable = (value: unknown): value is PromiseLike<unknown> =>
+  (typeof value === "object" || typeof value === "function") &&
+  value !== null &&
+  typeof (value as { then?: unknown }).then === "function";
+
 export interface MoqiOptions {
   readonly store?: EventStore;
   /** Needed for chat and learning. Briefings, watches and routines work without one. */
@@ -67,7 +75,8 @@ export interface MoqiOptions {
   readonly media?: { load(id: string): Promise<MediaImage | undefined> };
   /**
    * Receives the trace of every conversation turn and every watch run, event by event (taugraph's `onEvent`).
-   * A trace is for looking back and replaying; a failure to store it never stops moqi.
+   * It is called synchronously for each event and not awaited. A trace is for looking back and replaying; a
+   * failure to store it, thrown or rejected, never stops moqi.
    */
   readonly onTrace?: (event: TraceEvent) => void;
 }
@@ -107,7 +116,9 @@ export class Moqi {
       onTrace &&
       ((event) => {
         try {
-          onTrace(event);
+          const stored: unknown = onTrace(event);
+          // not awaited: a sink that rejects loses its trace, never the conversation (nor the process)
+          if (isThenable(stored)) stored.then(undefined, () => {});
         } catch {
           // a trace that cannot be stored is lost; the conversation goes on
         }
@@ -131,6 +142,7 @@ export class Moqi {
       ...this.plugins.flatMap((p) => (p.tools ?? []).map((t): [Tool, string] => [t, t.source ?? p.name])),
     ];
     for (const [tool, source] of owned) {
+      if (!TOOL_NAME.test(tool.name)) throw new Error(`Tool name "${tool.name}" must match ^[A-Za-z0-9_-]{1,64}$`);
       if (this.tools.has(tool.name)) throw new Error(`Two tools are named "${tool.name}"`);
       this.tools.set(tool.name, tool);
       this.sources.set(tool.name, source);

@@ -1,6 +1,7 @@
 // moqi core: pure TypeScript, no Node APIs. Runs on desktop and in mobile JS runtimes.
 
-export type { LLMModel } from "taugraph/nodes";
+export type { TraceEvent } from "taugraph";
+export type { ChatMessage, LLMModel, LLMRequest, LLMResponse } from "taugraph/nodes";
 export { AGENT, chatTurn, learn, systemPrompt } from "./agent.js";
 export { type ActionPolicy, guarded, LEVELS, levelOf, needsConfirmation, promotionDue } from "./autonomy.js";
 export { type Briefing, composeBriefing } from "./briefing.js";

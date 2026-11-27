@@ -26,6 +26,11 @@ export interface OpenAICompatibleOptions {
    * strength (Muse Glimmer, gpt-oss): background work then uses the lightest setting.
    */
   readonly effort?: "low" | "medium" | "high";
+  /**
+   * Send the model's own reasoning back as `reasoning_content` in tool loops. Default true, which DeepSeek V4 and
+   * Kimi need; set false for endpoints that refuse the field, such as Groq and Cerebras.
+   */
+  readonly sendReasoning?: boolean;
 }
 
 /** OpenAI-compatible /chat/completions through taugraph/openai, with moqi's `noThink` and `effort` switches. */
@@ -35,6 +40,7 @@ export function openAICompatible(options: OpenAICompatibleOptions): LLMModel {
     model: options.model,
     apiKey: options.apiKey,
     fetch: options.fetch,
+    sendReasoning: options.sendReasoning,
     // "off" sends nothing unless `effort` is set: some endpoints refuse taugraph's default `reasoning_effort: "none"`.
     reasoningParams: (level) =>
       level === "off" ? (options.effort ? { reasoning_effort: options.effort } : {}) : { reasoning_effort: level },

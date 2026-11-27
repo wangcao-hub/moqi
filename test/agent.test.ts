@@ -1,5 +1,5 @@
-import type { TraceEvent } from "taugraph";
-import type { ChatMessage, LLMRequest } from "taugraph/nodes";
+import { isTaugraphError, type TraceEvent } from "taugraph";
+import type { ChatMessage, LLMRequest, LLMResponse } from "taugraph/nodes";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { systemPrompt } from "../src/core/agent.js";
@@ -254,6 +254,46 @@ describe("openAICompatible", () => {
     await expect(canSeeImages(fails(new Error("fetch failed")))).rejects.toThrow("fetch failed");
     await expect(canSeeImages(fails(refused(401)))).rejects.toThrow("401");
   });
+
+  it("sends a tool loop in OpenAI's format, with the model's own reasoning unless sendReasoning is false", async () => {
+    const { openAICompatible } = await import("../src/core/model.js");
+    const args = { kind: "basic", content: "住在深圳" };
+    const loop = async (sendReasoning?: boolean) => {
+      const bodies: Record<string, unknown>[] = [];
+      const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        const message =
+          bodies.length === 1
+            ? {
+                content: null,
+                reasoning_content: "think",
+                tool_calls: [
+                  { id: "c1", type: "function", function: { name: "remember", arguments: JSON.stringify(args) } },
+                ],
+              }
+            : { content: "记住了" };
+        return new Response(JSON.stringify({ choices: [{ message }] }));
+      }) as typeof globalThis.fetch;
+      const model = openAICompatible({
+        baseURL: "http://x/v1",
+        model: "deepseek-v4",
+        fetch,
+        ...(sendReasoning !== undefined && { sendReasoning }),
+      });
+      const { moqi } = harness({ model });
+      expect(await moqi.chat("我住在深圳")).toBe("记住了");
+      const messages = (bodies[1]?.messages ?? []) as Record<string, unknown>[];
+      const assistant = messages.find((m) => m.role === "assistant");
+      const calls = assistant?.tool_calls as { function: { arguments: unknown } }[] | undefined;
+      expect(typeof calls?.[0]?.function.arguments).toBe("string");
+      expect(JSON.parse(String(calls?.[0]?.function.arguments))).toEqual(args);
+      expect(messages.find((m) => m.role === "tool")).toMatchObject({ tool_call_id: "c1" });
+      expect(assistant?.content).toBeNull();
+      return assistant;
+    };
+    expect(await loop()).toMatchObject({ reasoning_content: "think" });
+    expect(await loop(false)).not.toHaveProperty("reasoning_content");
+  });
 });
 
 describe("withMedia", () => {
@@ -407,5 +447,58 @@ describe("a turn as a taugraph run", () => {
     };
     const { moqi } = harness({ model });
     await expect(moqi.chat("hi")).rejects.toBe(boom);
+  });
+
+  it("answers when an async onTrace rejects, leaving no unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => void unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    try {
+      const model = scriptedModel((r) => (isExtraction(r) ? '{"facts":[]}' : "嗯"));
+      const { moqi } = harness({
+        model,
+        onTrace: async () => {
+          throw new Error("db down");
+        },
+      });
+      expect(await moqi.chat("hi")).toBe("嗯");
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+  });
+
+  it("fails the turn with the error a tool call threw", async () => {
+    const crash = new Error("confirm UI crashed");
+    const model = scriptedModel((r) => {
+      if (isExtraction(r)) return '{"facts":[]}';
+      if (lastTool(r)) return "又试了一次";
+      return call("watch_create", { title: "早点睡", schedule: { every: "day", at: "22:00" }, remind: "该睡了" });
+    });
+    const { moqi } = harness({
+      model,
+      confirm: async () => {
+        throw crash;
+      },
+    });
+    await expect(moqi.chat("每晚十点提醒我睡觉")).rejects.toBe(crash);
+    expect(model.requests.filter((r) => !isExtraction(r))).toHaveLength(1);
+  });
+
+  it("an aborted turn throws ABORTED", async () => {
+    const model = {
+      id: "m",
+      complete: (_r: LLMRequest, { signal }: { signal: AbortSignal }) =>
+        new Promise<LLMResponse>((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+    };
+    const { moqi } = harness({ model });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 10);
+    const error = await moqi.chat("hi", controller.signal).catch((e: unknown) => e);
+    expect(isTaugraphError(error)).toBe(true);
+    expect((error as { code?: unknown }).code).toBe("ABORTED");
   });
 });

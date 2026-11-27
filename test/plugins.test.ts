@@ -1,7 +1,24 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
+import { defineTool } from "../src/core/plugin.js";
 import { calendarPlugin, parseIcs } from "../src/plugins/calendar.js";
 import { describeWeather, fetchForecast, weatherPlugin } from "../src/plugins/weather.js";
 import { harness } from "./helpers.js";
+
+describe("plugin tools", () => {
+  it("refuses at startup a tool name the model providers do not accept", () => {
+    const bad = defineTool({
+      name: "bad name",
+      description: "A tool with a space in its name",
+      input: z.object({}),
+      effect: "read",
+      run: () => "x",
+    });
+    expect(() => harness({ plugins: [{ name: "broken", tools: [bad] }] })).toThrow(
+      'Tool name "bad name" must match ^[A-Za-z0-9_-]{1,64}$',
+    );
+  });
+});
 
 const ICS = [
   "BEGIN:VCALENDAR",

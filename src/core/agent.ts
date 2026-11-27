@@ -95,6 +95,11 @@ export async function chatTurn(
   let tainted = how.fromAgent === true || activeFacts(moqi.state, moqi.clock.now()).some((f) => f.by !== undefined);
   const sites: SiteGrant = { granted: new Set() }; // sites the user agreed to open in this turn
   const shown: string[] = []; // images tools brought back, for the user
+  // A tool call that throws fails the turn with its error, as before the turn ran on taugraph: the agent would
+  // hand it to the model as an answer, and after a write the model might do it again. Stopping the run keeps it
+  // from going on; the caller's signal stops it too.
+  const stop = new AbortController();
+  let failure: { readonly error: unknown } | undefined;
   // Every rule about running a tool (checks, trust, confirmations) stays in callTool; the agent only records the call.
   const tools = moqi.visibleTools().map((t) => {
     const spec = toolSpec(t);
@@ -104,9 +109,15 @@ export async function chatTurn(
       inputSchema: spec.parameters,
       effect: t.effect,
       run: async (args) => {
-        const result = await moqi.callTool(t.name, { ...args }, { byUser: true, tainted, sites, images: shown });
-        if (!t.local) tainted = true;
-        return result;
+        try {
+          return await moqi.callTool(t.name, { ...args }, { byUser: true, tainted, sites, images: shown });
+        } catch (error) {
+          failure ??= { error };
+          stop.abort(error);
+          throw error;
+        } finally {
+          if (!t.local) tainted = true;
+        }
       },
     });
   });
@@ -121,16 +132,23 @@ export async function chatTurn(
   const run = newId("run", moqi.clock);
   const input = { messages: [...past, await userMessage(moqi, text, images, true)] };
   let final: string | null;
+  const forward = () => stop.abort(signal?.reason);
+  if (signal?.aborted) stop.abort(signal.reason);
+  else signal?.addEventListener("abort", forward, { once: true });
   try {
     const result = await agent.run(input, {
       runId: run,
-      ...(signal && { signal }),
+      signal: stop.signal,
       ...(moqi.onTrace && { onEvent: moqi.onTrace }),
     });
     final = result.state.final;
   } catch (error) {
-    // A model or tool failure surfaces as itself, as before the turn ran on taugraph.
+    // What reaches here: a run stopped for a tool call that threw (thrown as that error), a failed model call
+    // (NODE_FAILED, thrown as the model's own error, as before the turn ran on taugraph), or an abort (ABORTED).
+    if (failure) throw failure.error;
     throw isTaugraphError(error) && error.code === "NODE_FAILED" && error.cause !== undefined ? error.cause : error;
+  } finally {
+    signal?.removeEventListener("abort", forward);
   }
   const answer = final || "（我这次没想好怎么回答，换个说法再试试？）";
   moqi.emit({

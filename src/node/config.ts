@@ -14,6 +14,7 @@ export const ConfigSchema = z.object({
       apiKey: z.string().optional(),
       noThink: z.boolean().optional(),
       effort: z.enum(["low", "medium", "high"]).optional(),
+      sendReasoning: z.boolean().optional(),
       vision: z.boolean().optional(),
     })
     .optional(),

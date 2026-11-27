@@ -156,10 +156,6 @@ export function openHome(options: HomeOptions): Home {
         // the next pass tries again
       }
     };
-    const firstPrune = setTimeout(prune, 60_000);
-    const dailyPrune = setInterval(prune, 86_400_000);
-    firstPrune.unref();
-    dailyPrune.unref();
     const hub = new McpHub(VERSION, media);
     // A finished task is reported to whichever moqi is current by then, after the jobs before it.
     const code = codeRunner({
@@ -193,6 +189,11 @@ export function openHome(options: HomeOptions): Home {
         config = next;
       });
     reconfigureLater = (next) => reconfigure(next);
+    // Started last, so a failure above leaves no timers behind.
+    const firstPrune = setTimeout(prune, 60_000);
+    const dailyPrune = setInterval(prune, 86_400_000);
+    firstPrune.unref();
+    dailyPrune.unref();
     return {
       get moqi() {
         return moqi;
