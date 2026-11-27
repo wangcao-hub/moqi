@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-27
+
 - Fix: after six rounds of tools, DeepSeek could answer with its tool-call markup (`<｜｜DSML｜｜ calls>` …), shown as is in the conversation. The last call now keeps the tools with `tool_choice: "none"` and ends with a note that the tool calls are used up (taugraph 0.4.2), and tool-call markup left in an answer is removed. Depends on taugraph `^0.4.2`.
 
 ## [0.8.0] - 2026-11-27
