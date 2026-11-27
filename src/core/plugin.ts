@@ -33,6 +33,11 @@ export interface Tool<A = unknown> {
   readonly source?: string;
   /** For web tools: "goto" opens `args.url` and is granted once per site and turn; "within" acts on a granted site. */
   readonly site?: "goto" | "within";
+  /**
+   * Downloads `args.url` without a browser (e.g. web_read). Once the turn read outside content, only an address that
+   * appeared in the turn may be used: one the model put together could carry the user's words to whoever runs the site.
+   */
+  readonly readsUrl?: true;
   /** A read tool that must not run on a schedule, e.g. reading the clipboard. */
   readonly noWatch?: true;
   /** Says in plain words what a call will do, for the confirmation question, e.g. "每天 22:00 提醒你「早点睡」". */

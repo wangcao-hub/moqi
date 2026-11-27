@@ -2,7 +2,7 @@ import type { LLMRequest } from "taugraph/nodes";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineTool, type Plugin } from "../src/core/plugin.js";
-import { hostOf, siteDecision } from "../src/core/sites.js";
+import { addressesIn, appeared, hostOf, noteAddresses, siteDecision } from "../src/core/sites.js";
 import { State } from "../src/core/state.js";
 import { call, harness, scriptedModel } from "./helpers.js";
 
@@ -213,5 +213,47 @@ describe("site grants", () => {
     await moqi.chat("打开京东看看");
     expect(asked).toEqual(["要我打开 evil.test 吗？"]);
     expect(b.done.map((d) => d.split(" ")[0])).toEqual(["navigate", "snapshot", "click", "navigate", "click"]);
+  });
+});
+
+describe("addresses a turn has seen", () => {
+  it("picks addresses out of text the way a reader would", () => {
+    expect(
+      addressesIn(
+        "见 https://a.example/x。还有[链接](https://b.example/y?q=1)，以及 https://en.wikipedia.org/wiki/Foo_(bar)! 和「https://c.example/中文」",
+      ),
+    ).toEqual([
+      "https://a.example/x",
+      "https://b.example/y?q=1",
+      "https://en.wikipedia.org/wiki/Foo_(bar)",
+      "https://c.example/中文",
+    ]);
+    expect(addressesIn("[维基](https://en.wikipedia.org/wiki/Foo_(bar))")).toEqual([
+      "https://en.wikipedia.org/wiki/Foo_(bar)",
+    ]);
+    expect(addressesIn("没有网址 ftp://x.example/")).toEqual([]);
+  });
+
+  it("lets through an address that appeared, as is or shorter, and nothing longer", () => {
+    const seen = new Set<string>();
+    noteAddresses(seen, "结果：https://News.Example/a/b?id=1#top 和 https://c.example/中文");
+    expect(appeared(seen, "https://news.example/a/b?id=1")).toBe(true); // host case and the # part do not count
+    expect(appeared(seen, "https://news.example/a/b?id=1#other")).toBe(true);
+    expect(appeared(seen, "https://news.example/a/")).toBe(true); // shorter carries nothing more
+    expect(appeared(seen, "https://c.example/%E4%B8%AD%E6%96%87")).toBe(true); // encoded or not
+    expect(appeared(seen, "https://news.example/a/b?id=1&d=住在深圳")).toBe(false);
+    expect(appeared(seen, "https://evil.example/?d=住在深圳")).toBe(false);
+    expect(appeared(seen, "https://news.example.evil.test/a/b")).toBe(false);
+    expect(appeared(seen, "not a url")).toBe(false);
+  });
+
+  it("reads hostile text in linear time", () => {
+    const started = performance.now();
+    const seen = new Set<string>();
+    noteAddresses(seen, `https://a.example/${")".repeat(200_000)}`);
+    noteAddresses(seen, `https://a.example/${".".repeat(200_000)}x`);
+    noteAddresses(seen, "https://".repeat(100_000));
+    noteAddresses(seen, "https://a.example/x ".repeat(50_000));
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 });

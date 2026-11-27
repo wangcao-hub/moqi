@@ -291,6 +291,8 @@ What leaves your computer: requests to the model endpoint you configured (the co
 
 With Baidu, moqi downloads the pages it reads itself. It fetches only public `http` and `https` addresses: no user name or password in the address, no `localhost`, single-label names, `*.local`, `*.lan`, `*.home`, `*.internal`, `*.home.arpa` or `*.localdomain`, no loopback, private, link-local or CGNAT (100.64.0.0/10) IP address, each redirect checked again (at most 5), text pages only, at most 2 MB, 20 seconds. It cannot see what a public name resolves to, so a name that points into your network (DNS rebinding) is not caught; the console still refuses any request without its key.
 
+Once a conversation turn has read outside content (a page, a search result, another agent's words), `web_read` only opens an address that appeared as it is in that turn: in your message, the memories and recent conversation, or a tool's result. An address the model put together could carry your words to whoever runs that site, so it is not read, and moqi tells the model to ask you for it.
+
 ## Status and limits
 
 moqi runs on a computer: core, console, CLI, weather, calendar and news plugins, notifications, todos and reminders, watches, routines, reflection and study, and MCP and A2A in both directions.

@@ -9,6 +9,8 @@ export type SiteRole = "goto" | "within";
 export interface SiteGrant {
   readonly granted: Set<string>;
   current?: string | undefined;
+  /** Addresses, normalised, that appeared in what the model was given this turn; see `appeared`. */
+  readonly seen?: Set<string>;
 }
 
 /**
@@ -58,4 +60,63 @@ export function pageHost(result: string): string | undefined {
   const head = result.split("### Snapshot")[0] ?? "";
   const line = /^- Page URL: (\S+)\s*$/m.exec(head);
   return line?.[1] ? hostOf(line[1]) : undefined;
+}
+
+/** What a tool marked `readsUrl` answers, instead of reading, for an address the turn has not seen. */
+export const UNSEEN_ADDRESS =
+  "没有读：这一轮读到了外部内容，之后只能读这一轮里原样出现过的网址，这个网址没有出现过。要读的话，请用户把网址发过来。";
+
+/** An address as `seen` keeps it: parsed and printed back (host case, encoding), without the part after #. */
+function normalised(url: string): string | undefined {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return undefined;
+    u.hash = "";
+    return u.href;
+  } catch {
+    return undefined;
+  }
+}
+
+const TRAILING = ".,;:!?";
+
+/** Drops what ends a sentence, and a closing parenthesis the address did not open (a Markdown link's). Linear. */
+function trimmed(url: string): string {
+  let open = 0;
+  let close = 0;
+  for (const c of url) {
+    if (c === "(") open++;
+    else if (c === ")") close++;
+  }
+  let end = url.length;
+  for (;;) {
+    const c = url[end - 1];
+    if (c !== undefined && TRAILING.includes(c)) end--;
+    else if (c === ")" && close > open) {
+      end--;
+      close--;
+    } else break;
+  }
+  return url.slice(0, end);
+}
+
+/** The http(s) addresses in a text, as a reader picks them out: up to white space, quotes, brackets or Chinese punctuation. */
+export function addressesIn(text: string): string[] {
+  return [...text.matchAll(/https?:\/\/[^\s"'<>`{}[\]，。；！？、（）【】「」《》]+/gi)].map((m) => trimmed(m[0]));
+}
+
+/** Keeps the addresses a text holds, normalised, for `appeared`. */
+export function noteAddresses(seen: Set<string>, text: string): void {
+  for (const url of addressesIn(text)) {
+    const n = normalised(url);
+    if (n) seen.add(n);
+  }
+}
+
+/** Whether an address appeared in the turn, as is or cut shorter: cutting an address adds nothing to it. */
+export function appeared(seen: ReadonlySet<string>, url: string): boolean {
+  const wanted = normalised(url);
+  if (!wanted) return false;
+  for (const s of seen) if (s.startsWith(wanted)) return true;
+  return false;
 }

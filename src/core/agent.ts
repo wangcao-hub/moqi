@@ -1,12 +1,12 @@
 import { isTaugraphError } from "taugraph";
 import { createAgent, tool } from "taugraph/agent";
-import type { ChatMessage, ContentPart } from "taugraph/nodes";
+import { type ChatMessage, type ContentPart, textOf } from "taugraph/nodes";
 import { extractFacts, LEARN } from "./learn.js";
 import { activeFacts, OUTSIDE, promptSection } from "./memory.js";
 import { MEDIA } from "./model.js";
 import type { Moqi } from "./moqi.js";
 import { toolSpec } from "./plugin.js";
-import type { SiteGrant } from "./sites.js";
+import { noteAddresses, type SiteGrant } from "./sites.js";
 import { studySection } from "./study.js";
 import { newId } from "./types.js";
 
@@ -103,7 +103,9 @@ export async function chatTurn(
   // Once this turn has read anything from outside moqi, a dangerous action is asked again, unlocked or not.
   // A memory another agent wrote is in the prompt, so it counts from the start.
   let tainted = how.fromAgent === true || activeFacts(moqi.state, moqi.clock.now()).some((f) => f.by !== undefined);
-  const sites: SiteGrant = { granted: new Set() }; // sites the user agreed to open in this turn
+  // Addresses the model was given this turn: the only ones a tool may download once outside content came in.
+  const seen = new Set<string>();
+  const sites: SiteGrant = { granted: new Set(), seen }; // and the sites the user agreed to open in this turn
   const shown: string[] = []; // images tools brought back, for the user
   // A tool call that throws fails the turn with its error, as before the turn ran on taugraph: the agent would
   // hand it to the model as an answer, and after a write the model might do it again. Stopping the run keeps it
@@ -120,7 +122,9 @@ export async function chatTurn(
       effect: t.effect,
       run: async (args) => {
         try {
-          return await moqi.callTool(t.name, { ...args }, { byUser: true, tainted, sites, images: shown });
+          const result = await moqi.callTool(t.name, { ...args }, { byUser: true, tainted, sites, images: shown });
+          noteAddresses(seen, result);
+          return result;
         } catch (error) {
           failure ??= { error };
           stop.abort(error);
@@ -131,10 +135,13 @@ export async function chatTurn(
       },
     });
   });
+  const system = systemPrompt(moqi);
+  for (const said of [system, ...past.map((m) => textOf(m.content, { imagePlaceholder: "" })), text])
+    noteAddresses(seen, said);
   const agent = createAgent({
     model,
     tools,
-    system: systemPrompt(moqi),
+    system,
     maxRounds: AGENT.maxToolRounds + 1, // the last call may use no tool, so the model answers in words
     lastRound: "answer",
     lastRoundNote: AGENT.lastRoundNote,

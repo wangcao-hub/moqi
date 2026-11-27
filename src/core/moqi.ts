@@ -11,7 +11,7 @@ import { decide, defaultPolicy, inQuietHours, type Policy } from "./proactive.js
 import { REFLECT, reflect } from "./reflect.js";
 import { findRoutines } from "./routines.js";
 import { dayKey, describeSchedule, minuteOfDay, nextRun, parseTime } from "./schedule.js";
-import { hostOf, pageHost, type SiteGrant, siteDecision } from "./sites.js";
+import { appeared, hostOf, pageHost, type SiteGrant, siteDecision, UNSEEN_ADDRESS } from "./sites.js";
 import { State } from "./state.js";
 import { STUDY, studiedOn, study } from "./study.js";
 import { dueReminders, findRepeatedTodos, reminderOffer, reviewOffer, TODO, TODO_KIND } from "./todo.js";
@@ -423,6 +423,11 @@ export class Moqi {
     const ctx = { now: () => this.clock.now(), state: this.state, ...(how.tainted && { tainted: true }) };
     const problem = tool.validate?.(parsed.data, ctx);
     if (problem) return `参数不对：${problem}`; // back to the model; never ask the user to approve a broken call
+    // After outside content, an address the model put together is not read; asking would only teach the user to say yes.
+    if (tool.readsUrl && how.tainted === true && how.sites?.seen) {
+      const url = typeof args.url === "string" ? args.url : "";
+      if (!appeared(how.sites.seen, url)) return UNSEEN_ADDRESS;
+    }
     const policy = actionPolicy(tool);
     const guard = guarded(this.state, name, policy);
     const chosen = this.state.toolPolicies.get(name) ?? "ask";

@@ -218,6 +218,7 @@ export function searchPlugin(options: SearchOptions): Plugin {
             .describe("The page's address, http or https"),
         }),
         effect: "read",
+        readsUrl: true,
         run: async ({ url }) => formatPage(await service.read(url)),
       }),
     ],

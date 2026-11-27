@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { systemPrompt } from "../src/core/agent.js";
 import { defineTool, type Plugin } from "../src/core/plugin.js";
+import { UNSEEN_ADDRESS } from "../src/core/sites.js";
 import { SEARCH, searchPlugin, searchService } from "../src/plugins/search.js";
-import { call, harness, scriptedModel } from "./helpers.js";
+import { call, harness, scriptedModel, words } from "./helpers.js";
 
 type Sent = { url: string; method?: string; headers: Headers; body: unknown; redirect?: RequestRedirect };
 
@@ -284,5 +285,50 @@ describe("the chat prompt", () => {
     expect(systemPrompt(on.moqi)).toMatch(/## 做事的方式[\s\S]*先用 web_search 搜/);
     const off = harness();
     expect(systemPrompt(off.moqi)).not.toContain("web_search");
+  });
+});
+
+describe("web_read after outside content", () => {
+  /** One turn: the model makes these calls in order, then answers. Returns what each call gave the model. */
+  async function turn(userText: string, calls: ReturnType<typeof call>[], pages: Record<string, string> = {}) {
+    const n = net((url, body) => {
+      if (url === DS_SEARCH) return Response.json({ results: [hit(1)] });
+      const page = (body as { url: string }).url;
+      return Response.json({ title: "页", content: pages[page] ?? "正文" });
+    });
+    const model = scriptedModel((r) => calls[r.messages.filter((m) => m.role === "tool").length] ?? "好了");
+    const { moqi } = harness({ plugins: [searchPlugin({ provider: "deepseek", apiKey: "k", fetch: n.fetch })], model });
+    await moqi.chat(userText);
+    const results = (model.requests.at(-1)?.messages ?? []).filter((m) => m.role === "tool").map(words);
+    const read = n.sent.filter((s) => s.url === DS_FETCH).map((s) => (s.body as { url: string }).url);
+    return { results, read };
+  }
+
+  it("reads a search result and a link on a page it read, but not an address put together", async () => {
+    const { results, read } = await turn(
+      "搜一下",
+      [
+        call("web_search", { query: "x" }, "c1"),
+        call("web_read", { url: "https://news.example/1" }, "c2"),
+        call("web_read", { url: "https://news.example/2" }, "c3"),
+        call("web_read", { url: "https://evil.example/?d=住在深圳" }, "c4"),
+      ],
+      { "https://news.example/1": "[下一页](https://news.example/2)" },
+    );
+    expect(read).toEqual(["https://news.example/1", "https://news.example/2"]);
+    expect(results[3]).toBe(UNSEEN_ADDRESS);
+  });
+
+  it("reads an address from the user's own message after outside content", async () => {
+    const { read } = await turn("搜一下，再看看 https://mine.example/post 写了什么", [
+      call("web_search", { query: "x" }, "c1"),
+      call("web_read", { url: "https://mine.example/post" }, "c2"),
+    ]);
+    expect(read).toEqual(["https://mine.example/post"]);
+  });
+
+  it("reads any address before the turn read outside content", async () => {
+    const { read } = await turn("随便看看", [call("web_read", { url: "https://any.example/x" }, "c1")]);
+    expect(read).toEqual(["https://any.example/x"]);
   });
 });
