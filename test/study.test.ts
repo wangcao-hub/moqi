@@ -1,13 +1,13 @@
+import type { LLMRequest } from "taugraph/nodes";
 import { describe, expect, it } from "vitest";
 import { systemPrompt } from "../src/core/agent.js";
-import type { ChatRequest } from "../src/core/model.js";
 import type { Plugin } from "../src/core/plugin.js";
 import { lessonsDue, STUDY } from "../src/core/study.js";
 import { todoStats } from "../src/core/todo.js";
 import { articleText, newsPlugin } from "../src/plugins/news.js";
 import { HOUR, harness, scriptedModel } from "./helpers.js";
 
-const kindOf = (r: ChatRequest) => {
+const kindOf = (r: LLMRequest) => {
   const system = String(r.messages[0]?.content);
   if (system.includes("你在复盘")) return "lessons";
   if (system.includes("你在自学")) return "pick";

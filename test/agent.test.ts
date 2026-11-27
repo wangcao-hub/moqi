@@ -1,12 +1,12 @@
+import type { ChatMessage, LLMRequest } from "taugraph/nodes";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { systemPrompt } from "../src/core/agent.js";
-import type { ChatMessage, ChatRequest } from "../src/core/model.js";
 import { defineTool } from "../src/core/plugin.js";
-import { call, harness, scriptedModel } from "./helpers.js";
+import { call, harness, scriptedModel, words } from "./helpers.js";
 
-const isExtraction = (r: ChatRequest) => r.messages[0]?.content.includes("从对话里摘出用户亲口说的") ?? false;
-const lastTool = (r: ChatRequest) => [...r.messages].reverse().find((m) => m.role === "tool");
+const isExtraction = (r: LLMRequest) => words(r.messages[0]).includes("从对话里摘出用户亲口说的");
+const lastTool = (r: LLMRequest) => [...r.messages].reverse().find((m) => m.role === "tool");
 
 describe("conversation", () => {
   it("answers, calling tools in a loop and feeding results back", async () => {
@@ -54,7 +54,7 @@ describe("conversation", () => {
     await moqi.chat("下午要去接朵朵，她是我女儿");
     await moqi.idle();
     const extraction = model.requests.find(isExtraction);
-    expect(extraction).toMatchObject({ temperature: 0, json: true, reasoning: "off" });
+    expect(extraction).toMatchObject({ temperature: 0, responseFormat: "json", reasoning: "off" });
     expect(extraction?.tools).toBeUndefined();
     expect([...moqi.state.facts.values()].map((f) => f.content)).toEqual(["喜欢喝燕麦拿铁", "女儿叫朵朵"]);
   });
@@ -101,7 +101,11 @@ describe("conversation", () => {
     const model = scriptedModel((r) => {
       if (isExtraction(r)) return '{"facts":[]}';
       round++;
-      if (round === 1) return { content: "", toolCalls: [{ id: "a", name: "remember", arguments: "{oops" }] };
+      if (round === 1)
+        return {
+          content: "",
+          toolCalls: [{ id: "a", name: "remember", arguments: {}, parseError: "arguments are not valid JSON" }],
+        };
       if (round === 2) return call("teleport", {});
       return `${lastTool(r)?.content}`;
     });
@@ -118,9 +122,9 @@ describe("conversation", () => {
     const slow = {
       id: "slow",
       requests: model.requests,
-      chat: async (r: ChatRequest) => {
+      complete: async (r: LLMRequest, options: { signal: AbortSignal }) => {
         if (isExtraction(r)) await gate;
-        return model.chat(r);
+        return model.complete(r, options);
       },
     };
     const { moqi } = harness({ model: slow });
@@ -138,37 +142,146 @@ describe("conversation", () => {
 });
 
 describe("openAICompatible", () => {
-  it("adds /no_think only to quick side requests, and only when enabled", async () => {
-    const { openAICompatible } = await import("../src/core/model.js");
-    const bodies: { messages: { role: string; content: string }[] }[] = [];
-    const fetch = (async (_url: string, init?: RequestInit) => {
+  const signal = new AbortController().signal;
+  const recording = (content = "ok") => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
       bodies.push(JSON.parse(String(init?.body)));
-      return new Response(JSON.stringify({ choices: [{ message: { content: "<think>hmm</think>ok" } }] }));
+      return new Response(JSON.stringify({ choices: [{ message: { content } }] }));
     }) as typeof globalThis.fetch;
+    return { bodies, fetch };
+  };
+  const userText = (body: Record<string, unknown> | undefined) =>
+    (body?.messages as { content: unknown }[] | undefined)?.[1]?.content;
+
+  it("adds /no_think only to quick side requests, only when enabled, and drops <think>", async () => {
+    const { openAICompatible } = await import("../src/core/model.js");
+    const { bodies, fetch } = recording("<think>hmm</think>ok");
     const on = openAICompatible({ baseURL: "http://x/v1", model: "qwen3", noThink: true, fetch });
     const off = openAICompatible({ baseURL: "http://x/v1", model: "qwen3", fetch });
     const messages = [
       { role: "system" as const, content: "s" },
       { role: "user" as const, content: "hi" },
     ];
-    expect((await on.chat({ messages, reasoning: "off" })).content).toBe("ok");
-    await on.chat({ messages });
-    await off.chat({ messages, reasoning: "off" });
-    expect(bodies.map((b) => b.messages[1]?.content)).toEqual(["hi /no_think", "hi", "hi"]);
+    expect((await on.complete({ messages, reasoning: "off" }, { signal })).content).toBe("ok");
+    await on.complete({ messages }, { signal });
+    await off.complete({ messages, reasoning: "off" }, { signal });
+    expect(bodies.map(userText)).toEqual(["hi /no_think", "hi", "hi"]);
+    expect(on.id).toBe("openai-compatible:qwen3");
   });
 
-  it("asks models with adjustable reasoning for the lightest effort on background requests only", async () => {
+  it("asks for the lightest effort on background requests only, and sends no effort when none is set", async () => {
     const { openAICompatible } = await import("../src/core/model.js");
-    const bodies: Record<string, unknown>[] = [];
-    const fetch = (async (_url: string, init?: RequestInit) => {
-      bodies.push(JSON.parse(String(init?.body)));
-      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }));
-    }) as typeof globalThis.fetch;
+    const { bodies, fetch } = recording();
     const glimmer = openAICompatible({ baseURL: "http://x/v1", model: "muse-glimmer", effort: "low", fetch });
+    const plain = openAICompatible({ baseURL: "http://x/v1", model: "qwen3", fetch });
     const messages = [{ role: "user" as const, content: "hi" }];
-    await glimmer.chat({ messages, reasoning: "off" });
-    await glimmer.chat({ messages });
-    expect(bodies.map((b) => b.reasoning_effort)).toEqual(["low", undefined]);
+    await glimmer.complete({ messages, reasoning: "off" }, { signal });
+    await glimmer.complete({ messages }, { signal });
+    await plain.complete({ messages, reasoning: "off" }, { signal });
+    expect(bodies.map((b) => b.reasoning_effort)).toEqual(["low", undefined, undefined]);
+    expect(bodies[2]).not.toHaveProperty("reasoning_effort");
+  });
+
+  it("sends images as content parts, with /no_think on the words", async () => {
+    const { openAICompatible } = await import("../src/core/model.js");
+    const { bodies, fetch } = recording("红色");
+    const model = openAICompatible({ baseURL: "http://x/v1", model: "qwen3-vl", noThink: true, fetch });
+    await model.complete(
+      {
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "这是什么" },
+              { type: "image", data: "QUJD", mimeType: "image/png" },
+            ],
+          },
+        ],
+        reasoning: "off",
+      },
+      { signal },
+    );
+    expect((bodies[0]?.messages as { content: unknown }[] | undefined)?.[0]?.content).toEqual([
+      { type: "text", text: "这是什么 /no_think" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } },
+    ]);
+  });
+
+  it("puts /no_think after an image that came without words", async () => {
+    const { openAICompatible } = await import("../src/core/model.js");
+    const { bodies, fetch } = recording();
+    const model = openAICompatible({ baseURL: "http://x/v1", model: "qwen3-vl", noThink: true, fetch });
+    await model.complete(
+      {
+        messages: [{ role: "user", content: [{ type: "image", data: "QUJD", mimeType: "image/png" }] }],
+        reasoning: "off",
+      },
+      { signal },
+    );
+    expect((bodies[0]?.messages as { content: unknown }[] | undefined)?.[0]?.content).toEqual([
+      { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } },
+      { type: "text", text: "/no_think" },
+    ]);
+  });
+
+  it("tells a model that sees from one that does not, by the status of a refusal", async () => {
+    const { canSeeImages } = await import("../src/core/model.js");
+    const said = (content: string) => ({ id: "m", complete: async () => ({ content }) });
+    const fails = (error: unknown) => ({
+      id: "m",
+      complete: async () => {
+        throw error;
+      },
+    });
+    const refused = (status: number) => Object.assign(new Error(`responded ${status}`), { status });
+    expect(await canSeeImages(said("红色"))).toBe(true);
+    // A model that thinks first spends its first tokens on thinking: a tight limit leaves no answer.
+    const thinker = {
+      id: "m",
+      complete: async (r: LLMRequest) => ({ content: (r.maxTokens ?? 0) >= 400 ? "红色" : "" }),
+    };
+    expect(await canSeeImages(thinker)).toBe(true);
+    expect(await canSeeImages(said("Red."))).toBe(true);
+    expect(await canSeeImages(said("我看不到图片"))).toBe(false);
+    for (const status of [400, 413, 415, 422]) expect(await canSeeImages(fails(refused(status)))).toBe(false);
+    expect(await canSeeImages(fails(new Error("wrapped", { cause: refused(415) })))).toBe(false);
+    await expect(canSeeImages(fails(new Error("fetch failed")))).rejects.toThrow("fetch failed");
+    await expect(canSeeImages(fails(refused(401)))).rejects.toThrow("401");
+  });
+});
+
+describe("withMedia", () => {
+  it("reads media: references when a request is sent, and leaves the request it was given as it was", async () => {
+    const { withMedia } = await import("../src/core/model.js");
+    const inner = scriptedModel(() => "好");
+    const model = withMedia(inner, async (id) => (id === "m_1" ? { type: "image/png", data: "QUJD" } : undefined));
+    const request: LLMRequest = {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "看" },
+            { type: "image", url: "media:m_1" },
+            { type: "image", url: "https://example.com/a.png" },
+          ],
+        },
+      ],
+    };
+    await model.complete(request, { signal: new AbortController().signal });
+    expect(inner.requests[0]?.messages[0]?.content).toEqual([
+      { type: "text", text: "看" },
+      { type: "image", data: "QUJD", mimeType: "image/png" },
+      { type: "image", url: "https://example.com/a.png" },
+    ]);
+    expect(request.messages[0]?.content).toContainEqual({ type: "image", url: "media:m_1" });
+    expect(model.id).toBe("scripted");
+    await expect(
+      model.complete(
+        { messages: [{ role: "user", content: [{ type: "image", url: "media:m_gone" }] }] },
+        { signal: new AbortController().signal },
+      ),
+    ).rejects.toThrow("Image media:m_gone is gone");
   });
 });
 
@@ -185,13 +298,12 @@ describe("images in chat", () => {
     for (const id of ["m_1", "m_2", "m_3"]) await moqi.chat(`看 ${id}`, undefined, { images: [id] });
     await moqi.chat("看最后一张", undefined, { images: ["m_4"] });
     const sent = userMessages(model.requests.at(-1));
-    expect(sent.map((m) => m.content)).toEqual(["看 m_1 [图片]", "看 m_2", "看 m_3", "看最后一张"]);
-    expect(sent.map((m) => (m.images ?? []).map((i) => i.data))).toEqual([
-      [],
-      ["data-m_2"],
-      ["data-m_3"],
-      ["data-m_4"],
-    ]);
+    expect(sent.map(words)).toEqual(["看 m_1 [图片]", "看 m_2", "看 m_3", "看最后一张"]);
+    const imagesOf = (m: ChatMessage) =>
+      typeof m.content === "string"
+        ? []
+        : m.content.flatMap((p) => (p.type === "image" && "data" in p ? [p.data] : []));
+    expect(sent.map(imagesOf)).toEqual([[], ["data-m_2"], ["data-m_3"], ["data-m_4"]]);
     const logged = moqi.store.all().flatMap((e) => (e.type === "message" && e.role === "user" ? [e.images] : []));
     expect(logged).toEqual([["m_1"], ["m_2"], ["m_3"], ["m_4"]]);
   });
@@ -202,8 +314,7 @@ describe("images in chat", () => {
     await moqi.chat("", undefined, { images: ["m_ok"] });
     expect(userMessages(model.requests.at(-1)).at(-1)).toEqual({
       role: "user",
-      content: "",
-      images: [{ type: "image/png", data: "data-m_ok" }],
+      content: [{ type: "image", data: "data-m_ok", mimeType: "image/png" }],
     });
     await moqi.chat("这张呢", undefined, { images: ["m_gone"] });
     expect(userMessages(model.requests.at(-1)).at(-1)).toEqual({ role: "user", content: "这张呢 [图片]" });
@@ -227,50 +338,5 @@ describe("images in chat", () => {
       .filter((e) => e.type === "message")
       .at(-1);
     expect(answer).toMatchObject({ role: "assistant", text: "给你", images: ["m_shot"] });
-  });
-});
-
-describe("openAICompatible with images", () => {
-  it("sends images as content parts, with /no_think on the words", async () => {
-    const { openAICompatible } = await import("../src/core/model.js");
-    const bodies: { messages: { content: unknown }[] }[] = [];
-    const fetch = (async (_url: string, init?: RequestInit) => {
-      bodies.push(JSON.parse(String(init?.body)));
-      return new Response(JSON.stringify({ choices: [{ message: { content: "红色" } }] }));
-    }) as typeof globalThis.fetch;
-    const model = openAICompatible({ baseURL: "http://x/v1", model: "qwen3-vl", noThink: true, fetch });
-    await model.chat({
-      messages: [{ role: "user", content: "这是什么", images: [{ type: "image/png", data: "QUJD" }] }],
-      reasoning: "off",
-    });
-    expect(bodies[0]?.messages[0]?.content).toEqual([
-      { type: "text", text: "这是什么 /no_think" },
-      { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } },
-    ]);
-  });
-
-  it("tells a model that sees from one that does not", async () => {
-    const { canSeeImages } = await import("../src/core/model.js");
-    const said = (content: string) => ({ id: "m", chat: async () => ({ content, toolCalls: [] }) });
-    const fails = (message: string) => ({
-      id: "m",
-      chat: async () => {
-        throw new Error(message);
-      },
-    });
-    expect(await canSeeImages(said("红色"))).toBe(true);
-    // A model that thinks first spends its first tokens on thinking: a tight limit leaves no answer.
-    const thinker = {
-      id: "m",
-      chat: async (r: { maxTokens?: number }) => ({ content: (r.maxTokens ?? 0) >= 400 ? "红色" : "", toolCalls: [] }),
-    };
-    expect(await canSeeImages(thinker)).toBe(true);
-    expect(await canSeeImages(said("Red."))).toBe(true);
-    expect(await canSeeImages(said("我看不到图片"))).toBe(false);
-    expect(await canSeeImages(fails("http://x/v1/chat/completions responded 400: image input not supported"))).toBe(
-      false,
-    );
-    await expect(canSeeImages(fails("fetch failed"))).rejects.toThrow("fetch failed");
-    await expect(canSeeImages(fails("http://x/v1/chat/completions responded 401: bad key"))).rejects.toThrow("401");
   });
 });

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { lastSegment } from "../../core/code.js";
 import { seenOffers } from "../../core/feed.js";
 import { FACT_KINDS, isFaded } from "../../core/memory.js";
-import { canSeeImages, openAICompatible } from "../../core/model.js";
+import { canSeeImages, complete, openAICompatible } from "../../core/model.js";
 import { describeSchedule } from "../../core/schedule.js";
 import { daysLate, laterTodos, recentlyDone, todayTodos } from "../../core/todo.js";
 import type { Answer, Choices, FactKind, Todo, Urgency, Verdict } from "../../core/types.js";
@@ -745,12 +745,11 @@ export async function startConsole(options: ConsoleOptions): Promise<Console> {
       const model = formModel((body.model ?? {}) as Record<string, unknown>);
       const started = Date.now();
       try {
-        const reply = await model.chat({
-          messages: [{ role: "user", content: "用一句话打个招呼。" }],
-          maxTokens: 1024,
-          reasoning: "off",
-          signal: AbortSignal.timeout(60_000),
-        });
+        const reply = await complete(
+          model,
+          { messages: [{ role: "user", content: "用一句话打个招呼。" }], maxTokens: 1024, reasoning: "off" },
+          AbortSignal.timeout(60_000),
+        );
         const ms = Date.now() - started;
         // No answer about images (a timeout, a bad key) is not "cannot see": null, and nothing is kept.
         const vision = await canSeeImages(model, AbortSignal.timeout(60_000)).catch(() => null);

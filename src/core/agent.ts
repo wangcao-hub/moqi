@@ -1,6 +1,7 @@
+import type { ChatMessage, ContentPart } from "taugraph/nodes";
 import { extractFacts, LEARN } from "./learn.js";
 import { activeFacts, OUTSIDE, promptSection } from "./memory.js";
-import type { ChatMessage, ImagePart } from "./model.js";
+import { complete, MEDIA } from "./model.js";
 import type { Moqi } from "./moqi.js";
 import { toolSpec } from "./plugin.js";
 import type { SiteGrant } from "./sites.js";
@@ -30,22 +31,24 @@ export function systemPrompt(moqi: Moqi): string {
 const withImageMark = (text: string) => (text ? `${text} [图片]` : "[图片]");
 
 /** The images of one message that can still be read, and whether any could not. */
-async function loadImages(moqi: Moqi, ids: readonly string[]): Promise<{ images: ImagePart[]; missing: boolean }> {
-  const found = await Promise.all(ids.map((id) => moqi.loadImage(id)));
-  const images = found.filter((i): i is ImagePart => i !== undefined);
-  return { images, missing: images.length < ids.length };
+async function readable(moqi: Moqi, ids: readonly string[]): Promise<{ found: string[]; missing: boolean }> {
+  const loaded = await Promise.all(ids.map((id) => moqi.loadImage(id)));
+  const found = ids.filter((_, i) => loaded[i] !== undefined);
+  return { found, missing: found.length < ids.length };
 }
 
-/** A user message for the model: its images when it keeps them, "[图片]" for the ones it does not. */
+/** A user message for the model: references to its images when it keeps them, "[图片]" for the ones it does not. */
 async function userMessage(moqi: Moqi, text: string, ids: readonly string[], keep: boolean): Promise<ChatMessage> {
   if (ids.length === 0) return { role: "user", content: text };
   if (!keep) return { role: "user", content: withImageMark(text) };
-  const { images, missing } = await loadImages(moqi, ids);
-  return {
-    role: "user",
-    content: missing ? withImageMark(text) : text,
-    ...(images.length > 0 && { images }),
-  };
+  const { found, missing } = await readable(moqi, ids);
+  const said = missing ? withImageMark(text) : text;
+  if (found.length === 0) return { role: "user", content: said };
+  const parts: ContentPart[] = [
+    ...(said ? [{ type: "text" as const, text: said }] : []),
+    ...found.map((id) => ({ type: "image" as const, url: `${MEDIA}${id}` })),
+  ];
+  return { role: "user", content: parts };
 }
 
 /** The last messages; only the latest `withImages` user messages that had images still carry them. */
@@ -84,7 +87,10 @@ export async function chatTurn(
   const past = await history(moqi, AGENT.historyMessages, AGENT.imageMessages - (images.length > 0 ? 1 : 0));
   moqi.emit({ type: "message", role: "user", text, ...(images.length > 0 && { images: [...images] }) });
 
-  const tools = moqi.visibleTools().map(toolSpec);
+  const tools = moqi.visibleTools().map((t) => {
+    const spec = toolSpec(t);
+    return { name: spec.name, description: spec.description, inputSchema: spec.parameters };
+  });
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt(moqi) },
     ...past,
@@ -97,26 +103,24 @@ export async function chatTurn(
   const shown: string[] = []; // images tools brought back, for the user
   let answer = "";
   for (let round = 0; round <= AGENT.maxToolRounds; round++) {
-    const reply = await model.chat({
-      messages,
-      tools: round < AGENT.maxToolRounds ? tools : [],
-      temperature: 0.3,
-      ...(signal && { signal }),
-    });
-    if (reply.toolCalls.length === 0) {
+    const offer = round < AGENT.maxToolRounds && tools.length > 0;
+    const reply = await complete(model, { messages, ...(offer && { tools }), temperature: 0.3 }, signal);
+    const calls = reply.toolCalls ?? [];
+    if (calls.length === 0) {
       answer = reply.content;
       break;
     }
-    messages.push({ role: "assistant", content: reply.content, toolCalls: reply.toolCalls });
-    for (const call of reply.toolCalls) {
-      let args: Record<string, unknown> = {};
-      try {
-        args = JSON.parse(call.arguments || "{}") as Record<string, unknown>;
-      } catch {
+    messages.push({ role: "assistant", content: reply.content, toolCalls: calls });
+    for (const call of calls) {
+      if (call.parseError) {
         messages.push({ role: "tool", toolCallId: call.id, content: "参数不是合法的 JSON" });
         continue;
       }
-      const result = await moqi.callTool(call.name, args, { byUser: true, tainted, sites, images: shown });
+      const result = await moqi.callTool(
+        call.name,
+        { ...call.arguments },
+        { byUser: true, tainted, sites, images: shown },
+      );
       const used = moqi.tool(call.name);
       if (used && !used.local) tainted = true;
       messages.push({ role: "tool", toolCallId: call.id, content: result });

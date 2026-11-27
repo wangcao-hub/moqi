@@ -1,5 +1,5 @@
+import type { LLMRequest } from "taugraph/nodes";
 import { describe, expect, it } from "vitest";
-import type { ChatRequest } from "../src/core/model.js";
 import type { Plugin } from "../src/core/plugin.js";
 import { IDEA_KIND, REFLECT } from "../src/core/reflect.js";
 import { HOUR, harness, scriptedModel } from "./helpers.js";
@@ -19,7 +19,7 @@ const world: Plugin = {
 };
 
 const ideas = (...list: unknown[]) => JSON.stringify({ ideas: list });
-const reflectRequest = (r: ChatRequest) => String(r.messages[0]?.content).includes("你自己在想");
+const reflectRequest = (r: LLMRequest) => String(r.messages[0]?.content).includes("你自己在想");
 
 describe("reflection", () => {
   it("turns ideas into offers: a ready-made action, a question to answer, news with real links", async () => {
@@ -67,7 +67,7 @@ describe("reflection", () => {
     expect(prompt).toContain("[n1] 深圳明天暴雨");
     expect(prompt).toContain("今天还能问 2 个问题");
     expect(prompt).toContain("可以用来盯着的工具");
-    expect(model.requests[0]).toMatchObject({ json: true, reasoning: "off" });
+    expect(model.requests[0]).toMatchObject({ responseFormat: "json", reasoning: "off" });
 
     const thought = moqi.state.thoughts.at(-1);
     expect(thought?.trigger).toBe("user");

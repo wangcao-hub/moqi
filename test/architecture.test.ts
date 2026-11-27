@@ -18,7 +18,7 @@ const imports = (dir: string) =>
 describe("architecture", () => {
   it("keeps src/core free of Node APIs and of plugin or host code", () => {
     for (const { file, spec } of imports("src/core")) {
-      expect(spec, `${file} imports ${spec}`).toMatch(/^(\.\/[\w-]+\.js|taugraph(\/nodes)?|zod)$/);
+      expect(spec, `${file} imports ${spec}`).toMatch(/^(\.\/[\w-]+\.js|taugraph(\/(nodes|agent|openai))?|zod)$/);
     }
   });
 

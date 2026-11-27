@@ -1,8 +1,9 @@
 // Learning from conversation runs beside the chat, never inside it: answering and extracting at the
 // same time makes both worse, and most turns have nothing new.
+import type { LLMModel } from "taugraph/nodes";
 import { z } from "zod";
 import { FACT_KINDS, type RememberInput } from "./memory.js";
-import type { ChatModel } from "./model.js";
+import { complete } from "./model.js";
 import type { Fact } from "./types.js";
 
 export const LEARN = { everyUserTurns: 3, recentMessages: 6, maxFacts: 5 } as const;
@@ -26,26 +27,29 @@ const SYSTEM = `从对话里摘出用户亲口说的、以后用得上的个人�
 只输出 JSON：{"facts":[{"kind":"basic|preference|ongoing|relation|routine|other","content":"...","contradicts":"f_..."}]}，没有就输出 {"facts":[]}。`;
 
 export async function extractFacts(
-  model: ChatModel,
+  model: LLMModel,
   recent: readonly { role: "user" | "assistant"; text: string }[],
   known: readonly Fact[],
   signal?: AbortSignal,
 ): Promise<RememberInput[]> {
   const profile = known.length ? known.map((f) => `- [${f.id}] ${f.content}`).join("\n") : "（空）";
   const dialog = recent.map((m) => `${m.role === "user" ? "用户" : "助理"}：${m.text}`).join("\n");
-  const reply = await model.chat({
-    messages: [
-      { role: "system", content: SYSTEM },
-      { role: "user", content: `已有档案：\n${profile}\n\n最近对话：\n${dialog}` },
-    ],
-    temperature: 0,
-    // Reasoning models (Qwen3 on Ollama, DeepSeek-R1) think before answering and do not always obey
-    // "/no_think"; a tight cap leaves the answer empty. Learning runs in the background, so room is cheap.
-    maxTokens: 6144,
-    json: true,
-    reasoning: "off",
-    ...(signal && { signal }),
-  });
+  const reply = await complete(
+    model,
+    {
+      messages: [
+        { role: "system", content: SYSTEM },
+        { role: "user", content: `已有档案：\n${profile}\n\n最近对话：\n${dialog}` },
+      ],
+      temperature: 0,
+      // Reasoning models (Qwen3 on Ollama, DeepSeek-R1) think before answering and do not always obey
+      // "/no_think"; a tight cap leaves the answer empty. Learning runs in the background, so room is cheap.
+      maxTokens: 6144,
+      responseFormat: "json",
+      reasoning: "off",
+    },
+    signal,
+  );
   const parsed = Extracted.safeParse(parseJsonObject(reply.content));
   if (!parsed.success) return [];
   const ids = new Set(known.map((f) => f.id));

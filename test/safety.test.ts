@@ -1,6 +1,6 @@
+import type { LLMRequest } from "taugraph/nodes";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import type { ChatRequest } from "../src/core/model.js";
 import { defineTool, type Plugin } from "../src/core/plugin.js";
 import { call, harness, scriptedModel } from "./helpers.js";
 
@@ -40,7 +40,7 @@ function plugins() {
 
 /** The model makes these calls one after another in a turn, then answers. */
 const steps = (...calls: ReturnType<typeof call>[]) =>
-  scriptedModel((r: ChatRequest) => calls[r.messages.filter((m) => m.role === "tool").length] ?? "好了");
+  scriptedModel((r: LLMRequest) => calls[r.messages.filter((m) => m.role === "tool").length] ?? "好了");
 
 describe("dangerous actions", () => {
   it("unlocks or locks every dangerous tool of one source at once, and only those", () => {

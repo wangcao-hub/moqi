@@ -1,6 +1,5 @@
 import { z } from "zod";
 import type { ActionPolicy } from "./autonomy.js";
-import type { ToolSpec } from "./model.js";
 import type { State } from "./state.js";
 import type { Offer } from "./types.js";
 
@@ -58,6 +57,14 @@ export type ToolResult =
 
 export function defineTool<A>(tool: Tool<A>): Tool<A> {
   return tool;
+}
+
+/** A tool as moqi describes it to the model: its JSON Schema under `parameters`. */
+export interface ToolSpec {
+  readonly name: string;
+  readonly description: string;
+  /** JSON Schema of the arguments object. */
+  readonly parameters: Record<string, unknown>;
 }
 
 export function toolSpec(tool: Tool): ToolSpec {

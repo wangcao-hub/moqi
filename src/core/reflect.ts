@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { parseJsonObject } from "./learn.js";
 import { activeFacts, normalize, promptSection } from "./memory.js";
+import { complete } from "./model.js";
 import type { Moqi } from "./moqi.js";
 import { type OfferInput, type Plugin, toolSpec } from "./plugin.js";
 import { dayKey, describeSchedule } from "./schedule.js";
@@ -72,17 +73,20 @@ export async function reflect(moqi: Moqi, trigger: "timer" | "chat" | "user", si
   const questionsLeft = Math.max(0, REFLECT.questionsPerDay - moqi.state.offeredOn(IDEA_KIND.ask, now));
   let raw: unknown[] | undefined;
   try {
-    const reply = await moqi.model.chat({
-      messages: [
-        { role: "system", content: `${moqi.persona}\n\n${SYSTEM}` },
-        { role: "user", content: briefOf(moqi, now, situation, questionsLeft) },
-      ],
-      temperature: 0.7,
-      maxTokens: 6144, // reasoning models think first; this runs in the background, so room is cheap
-      json: true,
-      reasoning: "off",
-      ...(signal && { signal }),
-    });
+    const reply = await complete(
+      moqi.model,
+      {
+        messages: [
+          { role: "system", content: `${moqi.persona}\n\n${SYSTEM}` },
+          { role: "user", content: briefOf(moqi, now, situation, questionsLeft) },
+        ],
+        temperature: 0.7,
+        maxTokens: 6144, // reasoning models think first; this runs in the background, so room is cheap
+        responseFormat: "json",
+        reasoning: "off",
+      },
+      signal,
+    );
     raw = parseIdeas(reply.content);
     if (raw === undefined) throw new Error("模型的回答不是 JSON");
   } catch (error) {

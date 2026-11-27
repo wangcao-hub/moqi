@@ -4,6 +4,7 @@
 // What it learns goes into every conversation and every reflection, and the user can see and delete it.
 import { parseJsonObject } from "./learn.js";
 import { normalize, promptSection } from "./memory.js";
+import { complete } from "./model.js";
 import type { Moqi } from "./moqi.js";
 import { gatherContext } from "./reflect.js";
 import { dayKey } from "./schedule.js";
@@ -128,29 +129,32 @@ async function reviewLessons(moqi: Moqi, signal?: AbortSignal): Promise<number> 
     .slice(-5);
   const existing = [...state.lessons.values()].map((l) => `- [${l.id}] ${l.content}`);
   const todos = todoStats(state, now);
-  const reply = await model.chat({
-    messages: [
-      { role: "system", content: LESSONS_SYSTEM },
-      {
-        role: "user",
-        content: [
-          promptSection(state, now) || "## 你对用户的了解\n（还很少）",
-          `## 每类提议的反应\n${kinds.join("\n") || "（还没有）"}`,
-          `## 最近的提议和反应\n${recent.join("\n") || "（还没有）"}`,
-          failed.length ? `## 最近没做成的事\n${failed.join("\n")}` : "",
-          todos ? `## 待办的情况（最近 14 天）\n${todos}` : "",
-          `## 已有经验\n${existing.join("\n") || "（还没有）"}`,
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
-      },
-    ],
-    temperature: 0.3,
-    maxTokens: 6144,
-    json: true,
-    reasoning: "off",
-    ...(signal && { signal }),
-  });
+  const reply = await complete(
+    model,
+    {
+      messages: [
+        { role: "system", content: LESSONS_SYSTEM },
+        {
+          role: "user",
+          content: [
+            promptSection(state, now) || "## 你对用户的了解\n（还很少）",
+            `## 每类提议的反应\n${kinds.join("\n") || "（还没有）"}`,
+            `## 最近的提议和反应\n${recent.join("\n") || "（还没有）"}`,
+            failed.length ? `## 最近没做成的事\n${failed.join("\n")}` : "",
+            todos ? `## 待办的情况（最近 14 天）\n${todos}` : "",
+            `## 已有经验\n${existing.join("\n") || "（还没有）"}`,
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+        },
+      ],
+      temperature: 0.3,
+      maxTokens: 6144,
+      responseFormat: "json",
+      reasoning: "off",
+    },
+    signal,
+  );
   const parsed = parseJsonObject(reply.content) as { lessons?: unknown; retire?: unknown } | undefined;
   if (!parsed) throw new Error("模型的回答不是 JSON");
   for (const id of strings(parsed.retire))
@@ -183,24 +187,27 @@ async function studyWorld(
   const readable = Object.keys(links).filter((k) => owners[k]?.read);
   if (readable.length === 0) return { learned: 0, skipped: "没有能读原文的信息源" };
   const topics = [...new Set([...state.notes.values()].map((n) => n.topic))].slice(-10);
-  const pick = await model.chat({
-    messages: [
-      { role: "system", content: PICK_SYSTEM },
-      {
-        role: "user",
-        content: [
-          promptSection(state, now) || "## 你对用户的了解\n（还很少，挑一个大多数人都用得上的）",
-          `## 信息源\n${text}`,
-          `## 已经学过的主题\n${topics.join("、") || "（还没有）"}`,
-        ].join("\n\n"),
-      },
-    ],
-    temperature: 0.5,
-    maxTokens: 6144,
-    json: true,
-    reasoning: "off",
-    ...(signal && { signal }),
-  });
+  const pick = await complete(
+    model,
+    {
+      messages: [
+        { role: "system", content: PICK_SYSTEM },
+        {
+          role: "user",
+          content: [
+            promptSection(state, now) || "## 你对用户的了解\n（还很少，挑一个大多数人都用得上的）",
+            `## 信息源\n${text}`,
+            `## 已经学过的主题\n${topics.join("、") || "（还没有）"}`,
+          ].join("\n\n"),
+        },
+      ],
+      temperature: 0.5,
+      maxTokens: 6144,
+      responseFormat: "json",
+      reasoning: "off",
+    },
+    signal,
+  );
   const chosen = parseJsonObject(pick.content) as { topic?: unknown; refs?: unknown } | undefined;
   if (!chosen) throw new Error("模型的回答不是 JSON");
   const topic = typeof chosen.topic === "string" ? chosen.topic.trim().slice(0, 40) : "";
@@ -218,20 +225,23 @@ async function studyWorld(
     if (!link || !owner?.read || read.has(link.url)) continue;
     const article = (await owner.read(link.url, moqi.pluginContext()))?.trim();
     if (!article) continue;
-    const reply = await model.chat({
-      messages: [
-        { role: "system", content: NOTE_SYSTEM },
-        {
-          role: "user",
-          content: `${promptSection(state, now)}\n\n## 文章：${link.title}\n${article.slice(0, STUDY.articleChars)}`,
-        },
-      ],
-      temperature: 0.2,
-      maxTokens: 6144,
-      json: true,
-      reasoning: "off",
-      ...(signal && { signal }),
-    });
+    const reply = await complete(
+      model,
+      {
+        messages: [
+          { role: "system", content: NOTE_SYSTEM },
+          {
+            role: "user",
+            content: `${promptSection(state, now)}\n\n## 文章：${link.title}\n${article.slice(0, STUDY.articleChars)}`,
+          },
+        ],
+        temperature: 0.2,
+        maxTokens: 6144,
+        responseFormat: "json",
+        reasoning: "off",
+      },
+      signal,
+    );
     const parsed = parseJsonObject(reply.content) as { notes?: unknown } | undefined;
     for (const content of strings(parsed?.notes).slice(0, STUDY.notesPerArticle)) {
       const text = content.trim().slice(0, 200);

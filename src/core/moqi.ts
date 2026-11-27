@@ -1,9 +1,10 @@
+import type { LLMModel } from "taugraph/nodes";
 import { chatTurn, learn } from "./agent.js";
 import { guarded, levelOf, needsConfirmation, promotionDue, rank } from "./autonomy.js";
 import { type Briefing, composeBriefing } from "./briefing.js";
 import { type CodeResult, type CodeRunner, codeOffer, codeTools } from "./code.js";
 import { normalize, type RememberInput, rememberEvents } from "./memory.js";
-import type { ChatModel, ImagePart } from "./model.js";
+import { type MediaImage, withMedia } from "./model.js";
 import { actionPolicy, type OfferInput, type Plugin, type PluginContext, resultText, type Tool } from "./plugin.js";
 import { decide, defaultPolicy, inQuietHours, type Policy } from "./proactive.js";
 import { REFLECT, reflect } from "./reflect.js";
@@ -38,7 +39,7 @@ const UNWATCHABLE = ["list_memories", "watch_list", "todo_list"];
 export interface MoqiOptions {
   readonly store?: EventStore;
   /** Needed for chat and learning. Briefings, watches and routines work without one. */
-  readonly model?: ChatModel;
+  readonly model?: LLMModel;
   readonly plugins?: readonly Plugin[];
   readonly clock?: Clock;
   readonly policy?: Partial<Policy>;
@@ -62,7 +63,7 @@ export interface MoqiOptions {
   /** Runs coding tasks; absent: no coding agents. */
   readonly code?: CodeRunner;
   /** Reads the images messages refer to, by media id. Without it, images are mentioned as "[图片]". */
-  readonly media?: { load(id: string): Promise<ImagePart | undefined> };
+  readonly media?: { load(id: string): Promise<MediaImage | undefined> };
 }
 
 export interface TickReport {
@@ -74,7 +75,7 @@ export class Moqi {
   readonly state: State;
   readonly store: EventStore;
   readonly clock: Clock;
-  readonly model: ChatModel | undefined;
+  readonly model: LLMModel | undefined;
   readonly policy: Policy;
   readonly persona: string;
   readonly plugins: readonly Plugin[];
@@ -91,7 +92,8 @@ export class Moqi {
     this.options = options;
     this.store = options.store ?? memoryEventStore();
     this.clock = options.clock ?? systemClock;
-    this.model = options.model;
+    // Messages refer to images as media:<id>; they are read when a request is sent, so traces keep only the id.
+    this.model = options.model && withMedia(options.model, (id) => this.loadImage(id));
     this.policy = { ...defaultPolicy, ...options.policy };
     this.persona = options.persona ?? "你是 moqi（默契），用户的个人助理。你话少、靠谱，先替用户想到，再开口。";
     this.plugins = options.plugins ?? [];
@@ -138,7 +140,7 @@ export class Moqi {
   }
 
   /** An image a message refers to, for the model; undefined when it is gone or there is no media. */
-  async loadImage(id: string): Promise<ImagePart | undefined> {
+  async loadImage(id: string): Promise<MediaImage | undefined> {
     return (await this.options.media?.load(id)) ?? undefined;
   }
 

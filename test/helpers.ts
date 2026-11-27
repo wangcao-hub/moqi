@@ -1,4 +1,4 @@
-import type { ChatModel, ChatReply, ChatRequest } from "../src/core/model.js";
+import { type ChatMessage, type LLMModel, type LLMRequest, type LLMResponse, textOf } from "taugraph/nodes";
 import { Moqi, type MoqiOptions } from "../src/core/moqi.js";
 import type { Answer, Clock, Offer, Surface } from "../src/core/types.js";
 
@@ -26,24 +26,27 @@ export const RED_PNG = Buffer.from(
 export const HOUR = 3_600_000;
 export const DAY = 24 * HOUR;
 
-export type Script = (request: ChatRequest) => ChatReply | string;
+export type Script = (request: LLMRequest) => LLMResponse | string;
 
-export function scriptedModel(script: Script): ChatModel & { requests: ChatRequest[] } {
-  const requests: ChatRequest[] = [];
+export function scriptedModel(script: Script): LLMModel & { requests: LLMRequest[] } {
+  const requests: LLMRequest[] = [];
   return {
     id: "scripted",
     requests,
-    async chat(request) {
+    async complete(request) {
       requests.push(request);
       const r = script(request);
-      return typeof r === "string" ? { content: r, toolCalls: [] } : r;
+      return typeof r === "string" ? { content: r } : r;
     },
   };
 }
 
-export function call(name: string, args: Record<string, unknown>, id = `c_${name}`): ChatReply {
-  return { content: "", toolCalls: [{ id, name, arguments: JSON.stringify(args) }] };
+export function call(name: string, args: Record<string, unknown>, id = `c_${name}`): LLMResponse {
+  return { content: "", toolCalls: [{ id, name, arguments: args }] };
 }
+
+/** The words of a message, images left out. */
+export const words = (m: ChatMessage | undefined): string => (m ? textOf(m.content, { imagePlaceholder: "" }) : "");
 
 export interface Harness {
   moqi: Moqi;

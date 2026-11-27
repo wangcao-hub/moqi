@@ -1,6 +1,6 @@
+import type { LLMRequest } from "taugraph/nodes";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import type { ChatRequest } from "../src/core/model.js";
 import { defineTool, type Plugin } from "../src/core/plugin.js";
 import { hostOf, siteDecision } from "../src/core/sites.js";
 import { State } from "../src/core/state.js";
@@ -41,7 +41,7 @@ function browser() {
 }
 
 const steps = (...calls: ReturnType<typeof call>[]) =>
-  scriptedModel((r: ChatRequest) => calls[r.messages.filter((m) => m.role === "tool").length] ?? "好了");
+  scriptedModel((r: LLMRequest) => calls[r.messages.filter((m) => m.role === "tool").length] ?? "好了");
 
 describe("site grants", () => {
   it("reads the host of http(s) addresses only", () => {
@@ -116,7 +116,7 @@ describe("site grants", () => {
     const b = browser();
     const { moqi, asked } = harness({
       plugins: [b.plugin],
-      model: scriptedModel((r: ChatRequest) => {
+      model: scriptedModel((r: LLMRequest) => {
         const turn = r.messages.filter((m) => m.role === "user").length;
         const done = r.messages.filter((m) => m.role === "tool").length;
         if (turn === 1)
@@ -167,7 +167,7 @@ describe("site grants", () => {
     const { moqi, asked } = harness({
       plugins: [b.plugin],
       answer: (q) => (q.startsWith("要我打开") ? "always" : true),
-      model: scriptedModel((r: ChatRequest) => {
+      model: scriptedModel((r: LLMRequest) => {
         const turn = r.messages.filter((m) => m.role === "user").length;
         const done = r.messages.filter((m) => m.role === "tool").length;
         const script = [

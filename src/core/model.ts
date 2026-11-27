@@ -1,51 +1,12 @@
-// The model contract: chat with optional tool calling. Bring any provider with an adapter.
+// The model contract is taugraph's `LLMModel`. This file adds what moqi needs around it: an OpenAI-compatible
+// endpoint with moqi's switches, image references read from moqi's media, side requests, and the image check.
+import { type ChatMessage, type LLMModel, type LLMRequest, type LLMResponse, resolveImages } from "taugraph/nodes";
+import { openAICompatible as openAIEndpoint } from "taugraph/openai";
 
-export interface ToolCall {
-  readonly id: string;
-  readonly name: string;
-  /** JSON text, as the model produced it. */
-  readonly arguments: string;
-}
-
-/** An image for the model: its type and its bytes in base64. */
-export interface ImagePart {
+/** An image as moqi's media keeps it: its MIME type and its bytes in base64. */
+export interface MediaImage {
   readonly type: string;
   readonly data: string;
-}
-
-export type ChatMessage =
-  | { readonly role: "system"; readonly content: string }
-  | { readonly role: "user"; readonly content: string; readonly images?: readonly ImagePart[] }
-  | { readonly role: "assistant"; readonly content: string; readonly toolCalls?: readonly ToolCall[] }
-  | { readonly role: "tool"; readonly content: string; readonly toolCallId: string };
-
-export interface ToolSpec {
-  readonly name: string;
-  readonly description: string;
-  /** JSON Schema of the arguments object. */
-  readonly parameters: Record<string, unknown>;
-}
-
-export interface ChatRequest {
-  readonly messages: readonly ChatMessage[];
-  readonly tools?: readonly ToolSpec[];
-  readonly temperature?: number;
-  readonly maxTokens?: number;
-  /** Ask for a JSON object reply, where the provider supports it. */
-  readonly json?: boolean;
-  /** "off" asks reasoning models not to think first. Used for quick side requests; adapters map it as they can. */
-  readonly reasoning?: "off";
-  readonly signal?: AbortSignal;
-}
-
-export interface ChatReply {
-  readonly content: string;
-  readonly toolCalls: readonly ToolCall[];
-}
-
-export interface ChatModel {
-  readonly id: string;
-  chat(request: ChatRequest): Promise<ChatReply>;
 }
 
 export interface OpenAICompatibleOptions {
@@ -67,88 +28,43 @@ export interface OpenAICompatibleOptions {
   readonly effort?: "low" | "medium" | "high";
 }
 
-/** OpenAI-compatible /chat/completions with function calling: OpenAI, DeepSeek, Qwen, Ollama, vLLM, ... */
-export function openAICompatible(options: OpenAICompatibleOptions): ChatModel {
-  const url = `${options.baseURL.replace(/\/+$/, "")}/chat/completions`;
-  const doFetch = options.fetch ?? fetch;
+/** OpenAI-compatible /chat/completions through taugraph/openai, with moqi's `noThink` and `effort` switches. */
+export function openAICompatible(options: OpenAICompatibleOptions): LLMModel {
+  const endpoint = openAIEndpoint({
+    baseURL: options.baseURL,
+    model: options.model,
+    apiKey: options.apiKey,
+    fetch: options.fetch,
+    // "off" sends nothing unless `effort` is set: some endpoints refuse taugraph's default `reasoning_effort: "none"`.
+    reasoningParams: (level) =>
+      level === "off" ? (options.effort ? { reasoning_effort: options.effort } : {}) : { reasoning_effort: level },
+  });
   return {
-    id: `openai-compatible:${options.model}`,
-    async chat(request) {
-      const response = await doFetch(url, {
-        method: "POST",
-        ...(request.signal && { signal: request.signal }),
-        headers: {
-          "content-type": "application/json",
-          ...(options.apiKey && { authorization: `Bearer ${options.apiKey}` }),
-        },
-        body: JSON.stringify({
-          model: options.model,
-          messages: withNoThink(request, options.noThink === true).map(toWire),
-          ...(request.tools?.length && {
-            tools: request.tools.map((t) => ({
-              type: "function",
-              function: { name: t.name, description: t.description, parameters: t.parameters },
-            })),
-          }),
-          ...(request.temperature !== undefined && { temperature: request.temperature }),
-          ...(request.maxTokens !== undefined && { max_tokens: request.maxTokens }),
-          ...(request.json && { response_format: { type: "json_object" } }),
-          ...(request.reasoning === "off" && options.effort && { reasoning_effort: options.effort }),
-        }),
-      });
-      if (!response.ok)
-        throw new Error(`${url} responded ${response.status}: ${(await response.text()).slice(0, 300)}`);
-      const body = (await response.json()) as {
-        choices?: {
-          message?: {
-            content?: string | null;
-            tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[];
-          };
-        }[];
-      };
-      const message = body.choices?.[0]?.message;
-      return {
-        content: stripThinking(message?.content ?? ""),
-        toolCalls: (message?.tool_calls ?? []).flatMap((c, i) =>
-          c.function?.name
-            ? [{ id: c.id ?? `call_${i}`, name: c.function.name, arguments: c.function.arguments ?? "{}" }]
-            : [],
-        ),
-      };
+    id: endpoint.id,
+    async complete(request, { signal }) {
+      const sent = options.noThink === true && request.reasoning === "off" ? withNoThink(request) : request;
+      const response = await endpoint.complete(sent, { signal });
+      return { ...response, content: stripThinking(response.content) };
     },
   };
 }
 
-function withNoThink(request: ChatRequest, enabled: boolean): readonly ChatMessage[] {
-  if (!enabled || request.reasoning !== "off") return request.messages;
+/** Qwen3's switch: " /no_think" after the words of the last user message, or after its images if it has no words. */
+function withNoThink(request: LLMRequest): LLMRequest {
   const last = request.messages.map((m) => m.role).lastIndexOf("user");
-  return request.messages.map((m, i) =>
-    i === last && m.role === "user" ? { ...m, content: `${m.content} /no_think` } : m,
-  );
-}
-
-function toWire(m: ChatMessage): Record<string, unknown> {
-  if (m.role === "tool") return { role: "tool", content: m.content, tool_call_id: m.toolCallId };
-  if (m.role === "assistant" && m.toolCalls?.length) {
-    return {
-      role: "assistant",
-      content: m.content,
-      tool_calls: m.toolCalls.map((c) => ({
-        id: c.id,
-        type: "function",
-        function: { name: c.name, arguments: c.arguments },
-      })),
-    };
-  }
-  if (m.role === "user" && m.images?.length)
-    return {
-      role: "user",
-      content: [
-        ...(m.content ? [{ type: "text", text: m.content }] : []),
-        ...m.images.map((i) => ({ type: "image_url", image_url: { url: `data:${i.type};base64,${i.data}` } })),
-      ],
-    };
-  return { role: m.role, content: m.content };
+  return {
+    ...request,
+    messages: request.messages.map((m, i): ChatMessage => {
+      if (i !== last || m.role !== "user") return m;
+      if (typeof m.content === "string") return { ...m, content: `${m.content} /no_think` };
+      const at = m.content.map((p) => p.type).lastIndexOf("text");
+      if (at === -1) return { ...m, content: [...m.content, { type: "text", text: "/no_think" }] };
+      return {
+        ...m,
+        content: m.content.map((p, j) => (j === at && p.type === "text" ? { ...p, text: `${p.text} /no_think` } : p)),
+      };
+    }),
+  };
 }
 
 /** Reasoning models (Qwen3, DeepSeek-R1 via some servers) put their thoughts in <think> tags. */
@@ -156,28 +72,81 @@ export function stripThinking(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
 }
 
+const NEVER = new AbortController().signal;
+
+/** One model call outside a graph: learning, reflection, study, checks. Without a signal nothing cancels it. */
+export async function complete(model: LLMModel, request: LLMRequest, signal?: AbortSignal): Promise<LLMResponse> {
+  return model.complete(request, { signal: signal ?? NEVER });
+}
+
+/** How messages refer to an image in moqi's media: `media:<id>`. */
+export const MEDIA = "media:";
+
+/**
+ * The model with `media:<id>` image references read through `load` when a request is sent, so requests (and the
+ * traces that record them) keep only the reference. Other URLs pass as they are.
+ */
+export function withMedia(model: LLMModel, load: (id: string) => Promise<MediaImage | undefined>): LLMModel {
+  return {
+    id: model.id,
+    async complete(request, options) {
+      const messages = await resolveImages(request.messages, async (url) => {
+        if (!url.startsWith(MEDIA)) return { type: "image", url };
+        const image = await load(url.slice(MEDIA.length));
+        if (!image) throw new Error(`Image ${url} is gone`);
+        return { type: "image", data: image.data, mimeType: image.type };
+      });
+      return model.complete({ ...request, messages }, options);
+    },
+  };
+}
+
 /** A 32×32 solid red PNG: a model that can see says "red". */
 const RED_SQUARE =
   "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJ0lEQVR42u3NsQkAAAjAsP7/tF7hIASyp6lTCQQCgUAgEAgEgi/BAjLD/C5w/SM9AAAAAElFTkSuQmCC";
+
+/** Statuses that mean the endpoint refused the request itself (it cannot take images), not that it failed. */
+const REFUSED: ReadonlySet<number> = new Set([400, 413, 415, 422]);
+
+/** The nearest numeric `status` on an error or its `cause` chain, as HTTP errors carry it (taugraph's `HTTPError`). */
+function statusOf(error: unknown): number | undefined {
+  let current = error;
+  for (let depth = 0; depth <= 5 && typeof current === "object" && current !== null; depth++) {
+    const status = (current as { status?: unknown }).status;
+    if (typeof status === "number") return status;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
 
 /**
  * Whether the model reads images: it is shown a red square and asked its colour. A refusal of the request
  * itself (400, 413, 415, 422) means it cannot; any other failure is not an answer and is thrown. The token
  * limit leaves room for models that think before they answer (deepseek-flash by that name does).
  */
-export async function canSeeImages(model: ChatModel, signal?: AbortSignal): Promise<boolean> {
+export async function canSeeImages(model: LLMModel, signal?: AbortSignal): Promise<boolean> {
   try {
-    const reply = await model.chat({
-      messages: [
-        { role: "user", content: "这张图是什么颜色？只回答颜色。", images: [{ type: "image/png", data: RED_SQUARE }] },
-      ],
-      maxTokens: 512,
-      reasoning: "off",
-      ...(signal && { signal }),
-    });
+    const reply = await complete(
+      model,
+      {
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "这张图是什么颜色？只回答颜色。" },
+              { type: "image", data: RED_SQUARE, mimeType: "image/png" },
+            ],
+          },
+        ],
+        maxTokens: 512,
+        reasoning: "off",
+      },
+      signal,
+    );
     return /红|red/i.test(reply.content);
   } catch (error) {
-    if (/ responded (400|413|415|422):/.test(error instanceof Error ? error.message : String(error))) return false;
+    const status = statusOf(error);
+    if (status !== undefined && REFUSED.has(status)) return false;
     throw error;
   }
 }
