@@ -397,6 +397,21 @@ describe("console", () => {
     expect(readConfigFile(dir).model).toEqual(other); // the old key is gone, not moved
   });
 
+  it("keeps a hand-written sendReasoning while the model stays the same", async () => {
+    const { dir, api } = await start({
+      model: { baseURL: "http://x/v1", model: "m", sendReasoning: false },
+      briefingAt: null,
+    });
+    const { config } = (await api("GET", "/api/config")).data;
+    const same = { baseURL: "http://x/v1", model: "m" };
+    expect((await api("POST", "/api/config", { config: { ...config, model: same } })).status).toBe(200);
+    expect(readConfigFile(dir).model?.sendReasoning).toBe(false);
+    expect((await api("POST", "/api/config", { config: { ...config, model: { ...same, model: "m2" } } })).status).toBe(
+      200,
+    );
+    expect(readConfigFile(dir).model?.sendReasoning).toBeUndefined();
+  });
+
   it("tests a model connection, looks up a city and checks a calendar file", async () => {
     const { dir, api, net } = await start({ model: { ...MODEL, apiKey: "sk-saved" } }, () => ({
       content: "<think>嗯</think>你好呀",

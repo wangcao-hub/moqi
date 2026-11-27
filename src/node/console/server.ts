@@ -699,6 +699,12 @@ export async function startConsole(options: ConsoleOptions): Promise<Console> {
           model.vision = old.vision;
         else delete model.vision;
       }
+      // A setting the page has no field for is kept while the model stays the same.
+      if (model && model.sendReasoning === undefined) {
+        const old = file.model;
+        if (old?.sendReasoning !== undefined && old.baseURL === model.baseURL && old.model === model.model)
+          model.sendReasoning = old.sendReasoning;
+      }
       if (raw.model === null) delete raw.model;
       // MCP servers and A2A agents have their own buttons; a page that does not send them keeps them.
       if (raw.mcp === undefined && file.mcp) raw.mcp = file.mcp;
