@@ -35,7 +35,8 @@ export interface NewsOptions {
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 
-function decode(text: string): string {
+/** Plain text from a bit of HTML or XML: CDATA and entities decoded, tags dropped, white space folded. */
+export function decode(text: string): string {
   return text
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
     .replace(/<[^>]+>/g, "")
