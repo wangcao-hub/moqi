@@ -271,9 +271,13 @@ setInterval(() => void moqi.tick(), 60_000); // the proactive heartbeat
 
 `effect: "read"` tools run freely and can be used by watches. `"write"` tools start at "ask first" and earn trust; pass `confirm: (question) => Promise<boolean>` to ask the user, otherwise unearned writes are refused. State lives in memory by default; `fileEventStore` from `moqi-agent/node` keeps it in a JSONL file.
 
+`model` takes any taugraph `LLMModel` (`{ id, complete(request, { signal }) }`); `openAICompatible` covers OpenAI-compatible endpoints. Each conversation turn runs as a [`taugraph/agent`](https://github.com/wangcao-hub/taugraph) run and each watch as a taugraph flow; pass `onTrace` to receive their traces, event by event.
+
 ## Data and privacy
 
 All state is replayed from `~/.moqi/events.jsonl`, one event per line, append-only. API keys never go into the log, and `config.json` is created readable only by you.
+
+Each conversation turn and each watch run also leaves a trace under `~/.moqi/runs/`, one JSONL file per run, with every request to the model, its reply and every tool call. Traces are for looking back and for replaying real conversations after a change; the log stays the only record of state. They are kept 30 days. Images appear in them as `media:<id>` references, not as image data.
 
 The console listens on `127.0.0.1` only. Its address carries a random key after `#`, so the key never reaches a server log; every API call must present it, requests whose `Host` is not this machine are refused (against DNS rebinding), and the page loads nothing from outside under a strict Content Security Policy. A saved API key is never sent to the page.
 

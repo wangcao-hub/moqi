@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- **Breaking:** the model contract is taugraph's `LLMModel` (`complete(request, { signal })`, from `taugraph/nodes`, re-exported as a type). `ChatModel`, `ChatRequest`, `ChatReply`, `ChatMessage`, `ToolCall` and moqi's own adapter are gone; `MoqiOptions.model` takes an `LLMModel`, and `complete(model, request, signal?)` makes one call. `openAICompatible` keeps its name and options (`noThink`, `effort`) and now runs on `taugraph/openai`.
+- Each conversation turn runs as a `taugraph/agent` run and each watch as a taugraph flow, and `MoqiOptions.onTrace` receives their traces. The home keeps them under `~/.moqi/runs/`, one JSONL file per run, for 30 days. Answers and `watch.ran` events carry the `run` id of their trace. Images in requests are `media:<id>` references, read when a request is sent.
+- After six rounds of tools the last model call still goes without tools. Changed: invalid tool arguments and unknown tools are answered in English (`Invalid arguments: ...`, `No tool named "x"`), at most 32 tool calls run per reply, and the model can no longer call hidden tools.
+- The image check reads the status of a refusal (400, 413, 415, 422) instead of matching the error text.
+- Depends on taugraph `^0.4.1`. A watch whose check fails now waits 250–500 ms before its one retry.
+
 ## [0.7.2] - 2026-11-23
 
 - Fix: weather watches named after your city reported 北京. The config template no longer puts in 北京 as a placeholder; the weather tool takes a city (`place`) and looks it up, so "南京天气" watches carry 南京; and when moqi remembers you live somewhere other than the weather place, it offers once to switch, saving the new place when you accept.

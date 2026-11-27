@@ -272,9 +272,13 @@ setInterval(() => void moqi.tick(), 60_000); // 主动服务的心跳
 
 `effect: "read"` 的工具随时可用，也能被托管事务调用；`"write"` 的工具从"先问你"开始，靠你的同意一步步获得信任。传入 `confirm: (question) => Promise<boolean>` 来问用户，不传的话，还没挣到信任的写操作一律拒绝。状态默认只在内存里；用 `moqi-agent/node` 里的 `fileEventStore` 可以存进 JSONL 文件。
 
+`model` 接受任何 taugraph 的 `LLMModel`（`{ id, complete(request, { signal }) }`）；`openAICompatible` 用于 OpenAI 兼容接口。每轮对话是一次 [`taugraph/agent`](https://github.com/wangcao-hub/taugraph) 运行，每次托管事务是一次 taugraph 流程运行；传入 `onTrace` 可以逐个收到它们的 trace 事件。
+
 ## 数据与隐私
 
 所有状态都由事件日志重放得到：`~/.moqi/events.jsonl`，只追加，一行一个事件。API key 不进日志，`config.json` 创建时只有你自己能读。
+
+每轮对话和每次托管事务还会在 `~/.moqi/runs/` 下留一份 trace，一次运行一个 JSONL 文件，记下每次发给模型的请求、模型的回答和每次工具调用。trace 用来回头排查，以及改动之后用真实对话回放；状态仍然只由事件日志决定。trace 保留 30 天，里面的图片只记 `media:<编号>` 引用，不记图片数据。
 
 控制台只监听 `127.0.0.1`。它的地址在 `#` 后面带一把随机钥匙，所以钥匙不会出现在任何服务器日志里；每个接口都要出示这把钥匙；`Host` 不是本机的请求一律拒绝（防 DNS 重绑定）；页面在严格的内容安全策略下不加载任何外部资源。保存过的 API key 不会发回页面。
 

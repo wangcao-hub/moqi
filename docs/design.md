@@ -55,6 +55,8 @@ inform（只告诉）→ suggest（建议，一点就办）→ auto-undo（办�
 
 **内核不碰 Node API**：`src/core` 和 `src/plugins` 只用 `fetch`、`AbortController` 这类各运行时都有的东西，由架构测试检查。Node 专属的部分（文件、通知、命令行）在 `src/node`。
 
+**对话也是 taugraph 运行**：每轮对话是一次 `taugraph/agent` 运行，每次托管事务是一次 taugraph 流程运行。工具的规矩（参数校验、信任等级、确认、是否读过外部内容、网站授权）都在 `callTool` 里，agent 只负责循环和记录；工具轮数用完时，最后一次模型调用不带工具，让模型用文字作答。每次运行的 trace 交给 `onTrace`，家把它存在 `runs/` 下，保留 30 天，用来排查和改了提示词之后回放真实对话。事件日志仍是唯一事实来源，trace 存不下不影响 moqi。
+
 ## 4. 主动引擎
 
 提议（offer）有类型、价值（0 到 1）、紧急程度（`now` / `today` / `whenever`）和过期时间。送达规则：
