@@ -177,7 +177,14 @@ export interface CodeTask {
 // ---------------------------------------------------------------------------
 
 export type EventBody =
-  | { type: "message"; role: "user" | "assistant"; text: string; images?: readonly string[] }
+  | {
+      type: "message";
+      role: "user" | "assistant";
+      text: string;
+      images?: readonly string[];
+      /** For an answer: the taugraph run of its turn, whose trace has every model and tool call. */
+      run?: string;
+    }
   | { type: "observation"; source: string; data: unknown }
   | { type: "fact.added"; fact: Fact }
   | { type: "fact.confirmed"; factId: string }

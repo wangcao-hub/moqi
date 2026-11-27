@@ -1,11 +1,14 @@
+import { isTaugraphError } from "taugraph";
+import { createAgent, tool } from "taugraph/agent";
 import type { ChatMessage, ContentPart } from "taugraph/nodes";
 import { extractFacts, LEARN } from "./learn.js";
 import { activeFacts, OUTSIDE, promptSection } from "./memory.js";
-import { complete, MEDIA } from "./model.js";
+import { MEDIA } from "./model.js";
 import type { Moqi } from "./moqi.js";
 import { toolSpec } from "./plugin.js";
 import type { SiteGrant } from "./sites.js";
 import { studySection } from "./study.js";
+import { newId } from "./types.js";
 
 export const AGENT = { maxToolRounds: 6, historyMessages: 12, imageMessages: 3, replyImages: 8 } as const;
 
@@ -74,7 +77,7 @@ async function history(moqi: Moqi, limit: number, withImages: number): Promise<C
   return out;
 }
 
-/** One user turn: answer with tools, then learn on the side. `fromAgent`: another agent wrote this message. */
+/** One user turn, as one taugraph agent run: answer with tools, then learn on the side. `fromAgent`: another agent wrote this message. */
 export async function chatTurn(
   moqi: Moqi,
   text: string,
@@ -87,50 +90,54 @@ export async function chatTurn(
   const past = await history(moqi, AGENT.historyMessages, AGENT.imageMessages - (images.length > 0 ? 1 : 0));
   moqi.emit({ type: "message", role: "user", text, ...(images.length > 0 && { images: [...images] }) });
 
-  const tools = moqi.visibleTools().map((t) => {
-    const spec = toolSpec(t);
-    return { name: spec.name, description: spec.description, inputSchema: spec.parameters };
-  });
-  const messages: ChatMessage[] = [
-    { role: "system", content: systemPrompt(moqi) },
-    ...past,
-    await userMessage(moqi, text, images, true),
-  ];
   // Once this turn has read anything from outside moqi, a dangerous action is asked again, unlocked or not.
   // A memory another agent wrote is in the prompt, so it counts from the start.
   let tainted = how.fromAgent === true || activeFacts(moqi.state, moqi.clock.now()).some((f) => f.by !== undefined);
   const sites: SiteGrant = { granted: new Set() }; // sites the user agreed to open in this turn
   const shown: string[] = []; // images tools brought back, for the user
-  let answer = "";
-  for (let round = 0; round <= AGENT.maxToolRounds; round++) {
-    const offer = round < AGENT.maxToolRounds && tools.length > 0;
-    const reply = await complete(model, { messages, ...(offer && { tools }), temperature: 0.3 }, signal);
-    const calls = reply.toolCalls ?? [];
-    if (calls.length === 0) {
-      answer = reply.content;
-      break;
-    }
-    messages.push({ role: "assistant", content: reply.content, toolCalls: calls });
-    for (const call of calls) {
-      if (call.parseError) {
-        messages.push({ role: "tool", toolCallId: call.id, content: "参数不是合法的 JSON" });
-        continue;
-      }
-      const result = await moqi.callTool(
-        call.name,
-        { ...call.arguments },
-        { byUser: true, tainted, sites, images: shown },
-      );
-      const used = moqi.tool(call.name);
-      if (used && !used.local) tainted = true;
-      messages.push({ role: "tool", toolCallId: call.id, content: result });
-    }
+  // Every rule about running a tool (checks, trust, confirmations) stays in callTool; the agent only records the call.
+  const tools = moqi.visibleTools().map((t) => {
+    const spec = toolSpec(t);
+    return tool({
+      name: spec.name,
+      description: spec.description,
+      inputSchema: spec.parameters,
+      effect: t.effect,
+      run: async (args) => {
+        const result = await moqi.callTool(t.name, { ...args }, { byUser: true, tainted, sites, images: shown });
+        if (!t.local) tainted = true;
+        return result;
+      },
+    });
+  });
+  const agent = createAgent({
+    model,
+    tools,
+    system: systemPrompt(moqi),
+    maxRounds: AGENT.maxToolRounds + 1, // the last call goes without tools, so the model answers in words
+    lastRound: "answer",
+    temperature: 0.3,
+  });
+  const run = newId("run", moqi.clock);
+  const input = { messages: [...past, await userMessage(moqi, text, images, true)] };
+  let final: string | null;
+  try {
+    const result = await agent.run(input, {
+      runId: run,
+      ...(signal && { signal }),
+      ...(moqi.onTrace && { onEvent: moqi.onTrace }),
+    });
+    final = result.state.final;
+  } catch (error) {
+    // A model or tool failure surfaces as itself, as before the turn ran on taugraph.
+    throw isTaugraphError(error) && error.code === "NODE_FAILED" && error.cause !== undefined ? error.cause : error;
   }
-  answer ||= "（我这次没想好怎么回答，换个说法再试试？）";
+  const answer = final || "（我这次没想好怎么回答，换个说法再试试？）";
   moqi.emit({
     type: "message",
     role: "assistant",
     text: answer,
+    run,
     ...(shown.length > 0 && { images: shown.slice(0, AGENT.replyImages) }),
   });
   // Learning never delays the answer. moqi.idle() waits for it.

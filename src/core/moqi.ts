@@ -1,3 +1,4 @@
+import type { TraceEvent } from "taugraph";
 import type { LLMModel } from "taugraph/nodes";
 import { chatTurn, learn } from "./agent.js";
 import { guarded, levelOf, needsConfirmation, promotionDue, rank } from "./autonomy.js";
@@ -64,6 +65,11 @@ export interface MoqiOptions {
   readonly code?: CodeRunner;
   /** Reads the images messages refer to, by media id. Without it, images are mentioned as "[图片]". */
   readonly media?: { load(id: string): Promise<MediaImage | undefined> };
+  /**
+   * Receives the trace of every conversation turn and every watch run, event by event (taugraph's `onEvent`).
+   * A trace is for looking back and replaying; a failure to store it never stops moqi.
+   */
+  readonly onTrace?: (event: TraceEvent) => void;
 }
 
 export interface TickReport {
@@ -76,6 +82,8 @@ export class Moqi {
   readonly store: EventStore;
   readonly clock: Clock;
   readonly model: LLMModel | undefined;
+  /** `onTrace` made harmless: the event log is moqi's record, a trace only helps to look back. */
+  readonly onTrace: ((event: TraceEvent) => void) | undefined;
   readonly policy: Policy;
   readonly persona: string;
   readonly plugins: readonly Plugin[];
@@ -94,6 +102,16 @@ export class Moqi {
     this.clock = options.clock ?? systemClock;
     // Messages refer to images as media:<id>; they are read when a request is sent, so traces keep only the id.
     this.model = options.model && withMedia(options.model, (id) => this.loadImage(id));
+    const onTrace = options.onTrace;
+    this.onTrace =
+      onTrace &&
+      ((event) => {
+        try {
+          onTrace(event);
+        } catch {
+          // a trace that cannot be stored is lost; the conversation goes on
+        }
+      });
     this.policy = { ...defaultPolicy, ...options.policy };
     this.persona = options.persona ?? "你是 moqi（默契），用户的个人助理。你话少、靠谱，先替用户想到，再开口。";
     this.plugins = options.plugins ?? [];

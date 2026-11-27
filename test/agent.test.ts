@@ -1,3 +1,4 @@
+import type { TraceEvent } from "taugraph";
 import type { ChatMessage, LLMRequest } from "taugraph/nodes";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -98,19 +99,23 @@ describe("conversation", () => {
 
   it("survives malformed tool arguments and unknown tools", async () => {
     let round = 0;
+    const replies: string[] = [];
     const model = scriptedModel((r) => {
       if (isExtraction(r)) return '{"facts":[]}';
       round++;
-      if (round === 1)
+      if (round === 1) {
         return {
           content: "",
           toolCalls: [{ id: "a", name: "remember", arguments: {}, parseError: "arguments are not valid JSON" }],
         };
+      }
+      replies.push(words(lastTool(r)));
       if (round === 2) return call("teleport", {});
-      return `${lastTool(r)?.content}`;
+      return words(lastTool(r));
     });
     const { moqi } = harness({ model });
-    expect(await moqi.chat("hi")).toBe("没有工具 teleport");
+    expect(await moqi.chat("hi")).toBe('No tool named "teleport"');
+    expect(replies).toEqual(["Invalid arguments: arguments are not valid JSON", 'No tool named "teleport"']);
   });
 
   it("answers without waiting for learning to finish", async () => {
@@ -338,5 +343,69 @@ describe("images in chat", () => {
       .filter((e) => e.type === "message")
       .at(-1);
     expect(answer).toMatchObject({ role: "assistant", text: "给你", images: ["m_shot"] });
+  });
+});
+
+describe("a turn as a taugraph run", () => {
+  it("hands every event to onTrace and links the answer to its run", async () => {
+    const events: TraceEvent[] = [];
+    const model = scriptedModel((r) => {
+      if (isExtraction(r)) return '{"facts":[]}';
+      if (!lastTool(r)) return call("remember", { kind: "basic", content: "住在深圳南山" });
+      if (words(lastTool(r)).startsWith("记住了")) return call("list_memories", {});
+      return "好的";
+    });
+    const { moqi } = harness({ model, onTrace: (e) => events.push(e) });
+    expect(await moqi.chat("我住在深圳南山")).toBe("好的");
+    const answer = moqi.store
+      .all()
+      .filter((e) => e.type === "message")
+      .at(-1);
+    const runId = events[0]?.runId;
+    expect(answer).toMatchObject({ role: "assistant", text: "好的", run: runId });
+    expect(events.at(-1)).toMatchObject({ type: "run_end", meta: { status: "completed" } });
+    expect(events.filter((e) => e.type === "llm_call")).toHaveLength(3);
+    const tools = events.filter((e) => e.type === "tool_call");
+    expect(tools.map((e) => [e.nodeId, (e.input as { name: string }).name])).toEqual([
+      ["act_write", "remember"],
+      ["act", "list_memories"],
+    ]);
+    expect(events.every((e) => e.runId === runId)).toBe(true);
+  });
+
+  it("gives the model one last call without tools after six rounds of tools", async () => {
+    const model = scriptedModel((r) => {
+      if (isExtraction(r)) return '{"facts":[]}';
+      return r.tools ? call("list_memories", {}) : "说完了";
+    });
+    const { moqi } = harness({ model });
+    expect(await moqi.chat("查一下")).toBe("说完了");
+    const turn = model.requests.filter((r) => !isExtraction(r));
+    expect(turn).toHaveLength(7);
+    expect(turn.slice(0, 6).every((r) => (r.tools?.length ?? 0) > 0)).toBe(true);
+    expect(turn[6]).not.toHaveProperty("tools");
+  });
+
+  it("answers even when the trace cannot be stored", async () => {
+    const model = scriptedModel((r) => (isExtraction(r) ? '{"facts":[]}' : "嗯"));
+    const { moqi } = harness({
+      model,
+      onTrace: () => {
+        throw new Error("disk full");
+      },
+    });
+    expect(await moqi.chat("hi")).toBe("嗯");
+  });
+
+  it("throws the model's own error", async () => {
+    const boom = new Error("http://x/v1/chat/completions responded 500: down");
+    const model = {
+      id: "m",
+      complete: async () => {
+        throw boom;
+      },
+    };
+    const { moqi } = harness({ model });
+    await expect(moqi.chat("hi")).rejects.toBe(boom);
   });
 });
