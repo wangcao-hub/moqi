@@ -36,6 +36,9 @@ describe("addresses moqi may fetch itself", () => {
       "http://172.32.0.1/",
       "http://[2001:db8::1]/",
       "http://[::ffff:8.8.8.8]/",
+      "http://fritz.box/",
+      "http://100.63.255.255/",
+      "http://100.128.0.1/",
     ])
       expect(addressProblem(url), url).toBeUndefined();
   });
@@ -73,6 +76,17 @@ describe("addresses moqi may fetch itself", () => {
       "http://[fe80::1]/",
       "http://[::ffff:127.0.0.1]/",
       "http://[::ffff:192.168.1.1]/",
+      "http://nas/",
+      "http://nas./",
+      "http://router.lan/",
+      "http://media.home/",
+      "http://db.internal/",
+      "http://x.home.arpa/",
+      "http://pc.localdomain/",
+      "http://100.100.1.1/",
+      "http://100.64.0.1/",
+      "http://100.127.255.255/",
+      "http://[::ffff:100.100.1.1]/",
     ])
       expect(addressProblem(url), url).toBe(LOCAL);
   });

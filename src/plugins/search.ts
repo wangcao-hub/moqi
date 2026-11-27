@@ -47,7 +47,7 @@ const BAIDU = "https://qianfan.baidubce.com/v2/ai_search/web_search";
 /** What a failed status means, in words the model can pass on. */
 function statusProblem(service: string, status: number): string {
   if (status === 401) return "搜索的 key 不对，去设置里检查一下";
-  if (status === 402) return "DeepSeek 余额不足，充值后才能接着搜";
+  if (status === 402 && service.startsWith("DeepSeek")) return "DeepSeek 余额不足，充值后才能接着搜";
   if (status === 429) return "搜索太频繁，或今天的免费额度用完了，过一会儿再试";
   return `${service}出错了（${status}）`;
 }
@@ -154,8 +154,8 @@ export function searchService(options: SearchOptions): SearchService {
   return options.provider === "baidu" ? baidu(options.apiKey, doFetch) : deepseek(options.apiKey, doFetch);
 }
 
-/** The results as the model reads them: each summary cut short, the list kept to about SEARCH.resultChars. */
-export function formatHits(hits: readonly SearchHit[]): string {
+/** One block per hit the model reads: each summary cut short, the blocks kept to about SEARCH.resultChars. */
+export function hitBlocks(hits: readonly SearchHit[]): string[] {
   const blocks: string[] = [];
   let size = 0;
   for (const [i, h] of hits.entries()) {
@@ -165,7 +165,12 @@ export function formatHits(hits: readonly SearchHit[]): string {
     blocks.push(block.slice(0, SEARCH.resultChars));
     size += block.length + 2;
   }
-  return blocks.join("\n\n");
+  return blocks;
+}
+
+/** The results as the model reads them: each summary cut short, the list kept to about SEARCH.resultChars. */
+export function formatHits(hits: readonly SearchHit[]): string {
+  return hitBlocks(hits).join("\n\n");
 }
 
 /** A page as the model reads it: the title, then the text, cut at SEARCH.pageChars with a note that there is more. */
@@ -194,17 +199,24 @@ export function searchPlugin(options: SearchOptions): Plugin {
           const hits = await service.search(query, count);
           const first = hits[0];
           if (!first) return "没有搜到相关的网页";
+          const blocks = hitBlocks(hits);
           return {
             value: hits.map((h) => h.url).join("\n"),
-            headline: `搜到 ${hits.length} 条，第一条是「${first.title}」`,
-            details: formatHits(hits),
+            headline: `搜到 ${blocks.length} 条，第一条是「${first.title}」`,
+            details: blocks.join("\n\n"),
           };
         },
       }),
       defineTool({
         name: "web_read",
         description: "Read the main text of a web page by its address, e.g. one web_search found.",
-        input: z.object({ url: z.string().url().describe("The page's address, http or https") }),
+        input: z.object({
+          url: z
+            .string()
+            .url()
+            .refine((url) => /^https?:\/\//i.test(url), "只能读 http 和 https 的网页")
+            .describe("The page's address, http or https"),
+        }),
         effect: "read",
         run: async ({ url }) => formatPage(await service.read(url)),
       }),

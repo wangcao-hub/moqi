@@ -115,7 +115,7 @@ export function expandHome(path: string): string {
 export function loadConfig(home: string, env: NodeJS.ProcessEnv = process.env): Config {
   const config = withModelEnv(readConfigFile(home), env);
   const key = env.MOQI_SEARCH_API_KEY;
-  // The key replaces the one search would use; it never turns search on where it would be off.
+  // The key replaces the one search would use and fills a missing one; it never turns on search that is off or not set up.
   if (!key || (!config.search && !isDeepSeekModel(config))) return config;
   return {
     ...config,

@@ -214,7 +214,7 @@ The Settings tab writes `~/.moqi/config.json`; you can also edit it by hand (the
 | `mcp.servers`         | none                     | MCP servers (stdio) moqi may use, by name: `command`, `args`, `env`, `cwd`                                                                                                                                                                    |
 | `a2a.agents`          | none                     | A2A agents moqi may ask: `name`, `url` (the agent or its card), optional `key`                                                                                                                                                                |
 
-Environment variables: `MOQI_BASE_URL` with `MOQI_MODEL` replaces the model; `MOQI_API_KEY` supplies the key so it stays out of the file; `MOQI_SEARCH_API_KEY` does the same for web search (it never turns search on by itself).
+Environment variables: `MOQI_BASE_URL` with `MOQI_MODEL` replaces the model; `MOQI_API_KEY` supplies the key so it stays out of the file; `MOQI_SEARCH_API_KEY` supplies the web search key (it fills in a missing key but never turns on search that is off or not set up).
 
 ## What it does unasked
 
@@ -289,7 +289,7 @@ The console listens on `127.0.0.1` only. Its address carries a random key after 
 
 What leaves your computer: requests to the model endpoint you configured (the conversation plus the memories and headlines moqi includes in the prompt), your configured coordinates sent to Open-Meteo if the weather plugin is on, plain downloads of the news feeds you picked and of the articles moqi studies from them, your search words and the addresses of pages moqi reads, sent to DeepSeek (the same service as the conversation, when it is your model) or to Baidu if web search is on, and what moqi sends to A2A agents you added (each time with your approval). MCP servers you add run on your computer with your permissions. With a local model and no A2A agents, nothing about you leaves at all. The console and A2A listen on `127.0.0.1` only, so other computers cannot reach them.
 
-With Baidu, moqi downloads the pages it reads itself. It fetches only public `http` and `https` addresses: no user name or password in the address, no `localhost` or `*.local`, no loopback, private or link-local IP address, each redirect checked again (at most 5), text pages only, at most 2 MB, 20 seconds. It cannot see what a public name resolves to, so a name that points into your network (DNS rebinding) is not caught; the console still refuses any request without its key.
+With Baidu, moqi downloads the pages it reads itself. It fetches only public `http` and `https` addresses: no user name or password in the address, no `localhost`, single-label names, `*.local`, `*.lan`, `*.home`, `*.internal`, `*.home.arpa` or `*.localdomain`, no loopback, private, link-local or CGNAT (100.64.0.0/10) IP address, each redirect checked again (at most 5), text pages only, at most 2 MB, 20 seconds. It cannot see what a public name resolves to, so a name that points into your network (DNS rebinding) is not caught; the console still refuses any request without its key.
 
 ## Status and limits
 

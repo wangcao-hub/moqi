@@ -128,6 +128,7 @@ describe("Baidu AI search", () => {
   it("tells a wrong key and a used-up quota apart, in the status or in the body", async () => {
     const reply = (r: Response) =>
       searchService({ provider: "baidu", apiKey: "k", fetch: net(() => r).fetch }).search("x", 1);
+    await expect(reply(new Response("{}", { status: 402 }))).rejects.toThrow("百度搜索出错了（402）");
     await expect(reply(new Response("{}", { status: 429 }))).rejects.toThrow(
       "搜索太频繁，或今天的免费额度用完了，过一会儿再试",
     );
@@ -174,7 +175,7 @@ describe("web_search and web_read", () => {
     const out = await moqi.callTool("web_search", { query: "长文" }, { byUser: true });
     expect(sent[0]?.body).toEqual({ query: "长文", count: 6 });
     const [headline, ...rest] = out.split("\n");
-    expect(headline).toBe("搜到 10 条，第一条是「标题1」");
+    expect(headline).toBe("搜到 9 条，第一条是「标题1」");
     const list = rest.join("\n");
     expect(list.startsWith(`1. 标题1\nhttps://news.example/1\n${"长".repeat(500)}…\n\n2. 标题2\n`)).toBe(true);
     expect(list).not.toContain("长".repeat(501));
@@ -201,7 +202,8 @@ describe("web_search and web_read", () => {
       { query: "x", count: 11 },
     ])
       expect(await moqi.callTool("web_search", args, { byUser: true })).toMatch(/^参数不对/);
-    expect(await moqi.callTool("web_read", { url: "not a url" }, { byUser: true })).toMatch(/^参数不对/);
+    for (const url of ["not a url", "ftp://example.com/", "file:///etc/passwd", "javascript:alert(1)"])
+      expect(await moqi.callTool("web_read", { url }, { byUser: true }), url).toMatch(/^参数不对/);
     expect(sent).toEqual([]);
   });
 

@@ -23,6 +23,13 @@ describe("news feeds", () => {
       { title: "Atom 条目", url: "https://b.example/post", source: "B", at: Date.parse("2026-11-20T10:00:00Z") },
     ]);
     expect(parseFeed("<html>not a feed</html>", "C")).toEqual([]);
+    // A numeric entity past the last code point stays as written instead of breaking the feed.
+    expect(
+      parseFeed(
+        "<rss><item><title>大&#99999999;数 &#x110000; &#x10FFFF;</title><link>https://a.example/3</link></item></rss>",
+        "D",
+      ),
+    ).toEqual([{ title: "大&#99999999;数 &#x110000; \u{10FFFF}", url: "https://a.example/3", source: "D" }]);
   });
 
   it("merges feeds newest first, caches them, survives a failing feed, and gives reflection keyed links", async () => {
@@ -68,8 +75,15 @@ describe("news feeds", () => {
     expect(articleText("<body><NAV>菜单</nav><p>正文</p><aside>未关")).toBe("正文 未关");
     // An <article> that is never closed falls back to <main>.
     expect(articleText("<article>未关<main><p>主要的</p></main>")).toBe("主要的");
-    // A comment that is never closed runs to the end, as in a browser.
-    expect(articleText("<p>前</p><!-- 没有结束 <p>后</p>")).toBe("前");
+    // A "<!--" that is never closed is dropped by itself, so a script holding one does not eat the page.
+    expect(articleText('<body><script>var s = "<!--";</script><p>正文</p></body>')).toBe("正文");
+    expect(articleText("<p>前</p><!-- 没有结束 <p>后</p>")).toBe("前 没有结束 后");
+    // <!--> and <!---> are empty comments; a closed comment goes.
+    const empty = articleText("<p>前</p><!--> <p>后</p>");
+    expect(empty).toContain("前");
+    expect(empty).toContain("后");
+    expect(articleText("<p>前</p><!---> <p>后</p>")).toBe("前 后");
+    expect(articleText("<p>前</p><!-- 注释 --><p>后</p>")).toBe("前 后");
     const start = performance.now();
     for (const html of ["<!--".repeat(500_000), "<nav>".repeat(400_000), "<main ".repeat(330_000)]) articleText(html);
     expect(performance.now() - start).toBeLessThan(1500);

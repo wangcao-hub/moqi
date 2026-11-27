@@ -194,6 +194,10 @@ describe("web search setup", () => {
     expect(searchSetup(loadConfig(dir, env))).toEqual({ on: true, provider: "deepseek", apiKey: "sk-env" });
     write({ model: local, search: { provider: "baidu", apiKey: "bce-file" } });
     expect(searchSetup(loadConfig(dir, env))).toEqual({ on: true, provider: "baidu", apiKey: "sk-env" });
+    write({ model: { baseURL: "https://api.deepseek.com/v1", model: "deepseek-chat" } });
+    expect(searchSetup(loadConfig(dir, env))).toEqual({ on: true, provider: "deepseek", apiKey: "sk-env" });
+    write({ model: local, search: { provider: "deepseek" } });
+    expect(searchSetup(loadConfig(dir, env))).toEqual({ on: true, provider: "deepseek", apiKey: "sk-env" });
     write({ model: local });
     expect(searchSetup(loadConfig(dir, env))).toEqual({ on: false, provider: "deepseek" });
     write({ model: deepseek, search: { enabled: false } });

@@ -8,6 +8,9 @@ export const PAGE = { maxBytes: 2_000_000, timeoutMs: 20_000, maxRedirects: 5 } 
 
 const LOCAL = "不能读本机或局域网里的地址";
 
+/** Endings of names that only mean something inside a home or office network. */
+const LOCAL_ENDINGS = [".localhost", ".local", ".lan", ".home", ".internal", ".home.arpa", ".localdomain"] as const;
+
 export interface PageText {
   readonly title: string;
   readonly text: string;
@@ -16,11 +19,12 @@ export interface PageText {
 /** A reason this module gives itself; anything else thrown on the way is a failed download. */
 class PageProblem extends Error {}
 
-/** 0/8, 10/8, 127/8, 169.254/16, 172.16/12 and 192.168/16, by the first two parts of the address. */
+/** 0/8, 10/8, 100.64/10 (CGNAT, Tailscale), 127/8, 169.254/16, 172.16/12 and 192.168/16, by the first two parts. */
 function v4Local(a: number, b: number): boolean {
   return (
     a === 0 ||
     a === 10 ||
+    (a === 100 && b >= 64 && b <= 127) ||
     a === 127 ||
     (a === 169 && b === 254) ||
     (a === 172 && b >= 16 && b <= 31) ||
@@ -53,7 +57,9 @@ export function addressProblem(url: string): string | undefined {
   // The URL parser already turned 127.1, 2130706433 and 0x7f.0.0.1 into 127.0.0.1, and IPv6 into its short form.
   let host = parsed.hostname.toLowerCase();
   while (host.endsWith(".")) host = host.slice(0, -1); // a loop: /\.+$/ is slow on a long run of dots
-  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return LOCAL;
+  if (host === "localhost" || LOCAL_ENDINGS.some((ending) => host.endsWith(ending))) return LOCAL;
+  // A name without a dot (nas, router) is looked up in the router's search domain. IPv6 literals have no dot.
+  if (!host.includes(".") && !host.startsWith("[")) return LOCAL;
   const v4 = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(host);
   if (v4 && v4Local(Number(v4[1]), Number(v4[2]))) return LOCAL;
   if (host.startsWith("[") && v6Local(host.slice(1, -1))) return LOCAL;

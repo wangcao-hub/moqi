@@ -61,7 +61,7 @@ export function decode(text: string): string {
     .replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi, (m, e: string) => {
       if (e[0] === "#") {
         const code = e[1]?.toLowerCase() === "x" ? Number.parseInt(e.slice(2), 16) : Number(e.slice(1));
-        return Number.isFinite(code) && code > 0 ? String.fromCodePoint(code) : m;
+        return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : m; // past 0x10ffff it would throw
       }
       return ENTITIES[e.toLowerCase()] ?? m;
     })
@@ -97,7 +97,10 @@ export function innerHtml(html: string, name: string): string | undefined {
   return end < 0 ? undefined : html.slice(start, end);
 }
 
-/** `html` with each comment replaced by a space; a comment that is never closed runs to the end, as in a browser. */
+/**
+ * `html` with each comment replaced by a space; `<!-->` and `<!--->` are empty comments, as in a browser. A `<!--`
+ * that is never closed is often inside a script, so only those four characters go and no later comment is looked for.
+ */
 function withoutComments(html: string): string {
   let out = "";
   let at = 0;
@@ -105,8 +108,16 @@ function withoutComments(html: string): string {
     const open = html.indexOf("<!--", at);
     if (open < 0) return out + html.slice(at);
     out += `${html.slice(at, open)} `;
+    if (html.startsWith(">", open + 4)) {
+      at = open + 5;
+      continue;
+    }
+    if (html.startsWith("->", open + 4)) {
+      at = open + 6;
+      continue;
+    }
     const close = html.indexOf("-->", open + 4);
-    if (close < 0) return out;
+    if (close < 0) return out + html.slice(open + 4);
     at = close + 3;
   }
 }
