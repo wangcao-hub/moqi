@@ -21,6 +21,7 @@ import { macPlugin } from "./mac.js";
 import { McpHub, type McpServerStatus } from "./mcp-client.js";
 import { type MediaStore, mediaStore } from "./media.js";
 import { desktopNotifier, type Notifier } from "./notify.js";
+import { type Traces, traces } from "./traces.js";
 
 /** A typed answer to a question in the terminal. "a" means "以后都允许", only where the question offers it. */
 export function terminalAnswer(line: string, always: boolean): Answer {
@@ -83,6 +84,8 @@ export interface Home {
   readonly code: CodeRunner;
   /** Images the user sent and tools brought back. */
   readonly media: MediaStore;
+  /** Traces of conversation turns and watch runs, under `runs/` in the home. */
+  readonly traces: Traces;
   close(): void;
 }
 
@@ -144,6 +147,19 @@ export function openHome(options: HomeOptions): Home {
       void reconfigureLater(loadConfig(options.home));
     };
     const media = mediaStore(options.home);
+    const runs = traces(options.home);
+    // Old traces go in the background: a short command exits before the first pass; the always-on home prunes daily.
+    const prune = () => {
+      try {
+        runs.prune();
+      } catch {
+        // the next pass tries again
+      }
+    };
+    const firstPrune = setTimeout(prune, 60_000);
+    const dailyPrune = setInterval(prune, 86_400_000);
+    firstPrune.unref();
+    dailyPrune.unref();
     const hub = new McpHub(VERSION, media);
     // A finished task is reported to whichever moqi is current by then, after the jobs before it.
     const code = codeRunner({
@@ -154,7 +170,7 @@ export function openHome(options: HomeOptions): Home {
       ...(options.codeLaunch && { launch: options.codeLaunch }),
     });
     if (options.mcp !== false) hub.reconcile(config.mcp?.servers);
-    let moqi = build(config, store, options, notify, agents, hub, code, media, saveWeather);
+    let moqi = build(config, store, options, notify, agents, hub, code, media, saveWeather, runs);
     moqi.recoverCode(); // tasks a previous run left running were cut short
     let chain: Promise<unknown> = Promise.resolve();
     const serial = <T>(job: () => Promise<T>): Promise<T> => {
@@ -166,14 +182,14 @@ export function openHome(options: HomeOptions): Home {
     hub.watch(() => {
       void serial(async () => {
         await moqi.idle();
-        moqi = build(config, store, options, notify, agents, hub, code, media, saveWeather);
+        moqi = build(config, store, options, notify, agents, hub, code, media, saveWeather, runs);
       });
     });
     const reconfigure = (next: Config) =>
       serial(async () => {
         await moqi.idle();
         if (options.mcp !== false) hub.reconcile(next.mcp?.servers);
-        moqi = build(next, store, options, notify, agents, hub, code, media, saveWeather);
+        moqi = build(next, store, options, notify, agents, hub, code, media, saveWeather, runs);
         config = next;
       });
     reconfigureLater = (next) => reconfigure(next);
@@ -192,7 +208,10 @@ export function openHome(options: HomeOptions): Home {
       mcpStatus: () => hub.status(),
       code,
       media,
+      traces: runs,
       close: () => {
+        clearTimeout(firstPrune);
+        clearInterval(dailyPrune);
         hub.stop();
         release();
       },
@@ -213,6 +232,7 @@ function build(
   code: CodeRunner,
   media: MediaStore,
   saveWeather: (place: WeatherPlace) => void,
+  runs: Traces,
 ): Moqi {
   return new Moqi({
     store,
@@ -229,6 +249,7 @@ function build(
     briefingAt: config.briefingAt,
     code,
     media,
+    onTrace: runs.sink,
     todoReviewAt: config.todoReviewAt,
     policy: { quietFrom: config.quiet.from, quietTo: config.quiet.to, dailyBudget: config.dailyBudget },
     ...(options.confirm && { confirm: options.confirm }),

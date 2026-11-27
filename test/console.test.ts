@@ -1,5 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -287,6 +296,17 @@ describe("console", () => {
     const res = await api("POST", "/api/chat", { text: "你好" });
     expect(res.status).toBe(409);
     expect(res.data.error).toContain("还没配置模型");
+  });
+
+  it("keeps the trace of each conversation turn under runs/", async () => {
+    const { home, api } = await start({ model: { baseURL: "http://x/v1", model: "m" } }, () => ({ content: "好" }));
+    expect((await api("POST", "/api/chat", { text: "hi" })).data.reply).toBe("好");
+    const answer = home.moqi.store
+      .all()
+      .filter((e) => e.type === "message")
+      .at(-1) as { run?: string } | undefined;
+    expect(answer?.run).toMatch(/^run_/);
+    expect(readdirSync(home.traces.dir)).toContain(`${answer?.run}.jsonl`);
   });
 
   it("answers offers, forgets memories and cancels watches for the user, without asking again", async () => {
