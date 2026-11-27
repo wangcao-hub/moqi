@@ -45,7 +45,7 @@ export function fileEventStore(path: string): EventStore & { readonly path: stri
 
 /** One moqi process per home: two writers would interleave the log. */
 export function acquireLock(home: string): () => void {
-  mkdirSync(home, { recursive: true });
+  mkdirSync(home, { recursive: true, mode: 0o700 }); // a new home is readable only by the user
   const path = join(home, "moqi.lock");
   for (let attempt = 0; attempt < 2; attempt++) {
     try {

@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGraph, isTaugraphError, toJSONL } from "taugraph";
@@ -51,6 +51,12 @@ describe("traces", () => {
     expect(t.prune()).toBe(3);
     expect(files(t.dir)).toEqual([`${recent.runId}.jsonl`, `${paused.runId}.jsonl`].sort());
     expect(t.prune(Date.now() + (TRACE_DAYS + 1) * 86_400_000)).toBe(1); // the recent one, a month later
+  });
+
+  it("keeps the traces readable only by the user", () => {
+    const home = tmp();
+    traces(home);
+    expect(statSync(join(home, "runs")).mode & 0o777).toBe(0o700);
   });
 
   it("reports the first failure to store a trace once, and never stops a run", async () => {

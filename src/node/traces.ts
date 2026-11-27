@@ -1,5 +1,6 @@
 // Traces of conversation turns and watch runs: one JSONL file per taugraph run under <moqi home>/runs, kept 30 days.
 // The event log stays moqi's only record; a trace is for looking back and for replaying a conversation.
+import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { TraceEvent } from "taugraph";
 import { fileStore } from "taugraph/file";
@@ -17,8 +18,16 @@ export interface Traces {
 }
 
 export function traces(home: string, report: (line: string) => void = (line) => console.error(line)): Traces {
+  // Readable only by the user, like media: a trace holds the prompt with the memories, files and web pages read.
+  const dir = join(home, "runs");
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o700);
+  } catch {
+    // the first trace that cannot be stored says why
+  }
   // No fsync: losing the last events of a trace in a power cut costs nothing moqi relies on.
-  const store = fileStore(join(home, "runs"), { durability: "none" });
+  const store = fileStore(dir, { durability: "none" });
   let reported = false;
   return {
     dir: store.dir,
