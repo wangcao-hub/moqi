@@ -2,12 +2,20 @@ import { isTaugraphError, type TraceEvent } from "taugraph";
 import type { ChatMessage, LLMRequest, LLMResponse } from "taugraph/nodes";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { systemPrompt } from "../src/core/agent.js";
+import { AGENT, systemPrompt } from "../src/core/agent.js";
 import { defineTool } from "../src/core/plugin.js";
 import { call, harness, scriptedModel, words } from "./helpers.js";
 
 const isExtraction = (r: LLMRequest) => words(r.messages[0]).includes("从对话里摘出用户亲口说的");
 const lastTool = (r: LLMRequest) => [...r.messages].reverse().find((m) => m.role === "tool");
+// The tool-call markup DeepSeek wrote into an answer when its last call had no tools (the bar is U+FF5C).
+const DSML = [
+  "<｜｜DSML｜｜ calls>",
+  '<｜｜DSML｜｜ invoke name="browser__browser_evaluate">',
+  '<｜｜DSML｜｜ parameter name="function" string="true">() => document.body.innerText...</｜｜DSML｜｜ parameter>',
+  "</｜｜DSML｜｜ invoke>",
+  "</｜｜DSML｜｜ calls>",
+].join("\n");
 
 describe("conversation", () => {
   it("answers, calling tools in a loop and feeding results back", async () => {
@@ -294,6 +302,27 @@ describe("openAICompatible", () => {
     expect(await loop()).toMatchObject({ reasoning_content: "think" });
     expect(await loop(false)).not.toHaveProperty("reasoning_content");
   });
+
+  it("drops tool-call markup a model writes as text", async () => {
+    const { openAICompatible } = await import("../src/core/model.js");
+    const replies = [
+      DSML,
+      `前面的话\n${DSML}`,
+      "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>x\n```json\n{}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>",
+      '答案\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name="x">',
+    ];
+    const bodies: Record<string, unknown>[] = [];
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      const content = replies[bodies.length - 1];
+      return new Response(JSON.stringify({ choices: [{ message: { content } }] }));
+    }) as typeof globalThis.fetch;
+    const model = openAICompatible({ baseURL: "http://x/v1", model: "deepseek-flash", fetch });
+    const messages = [{ role: "user" as const, content: "查" }];
+    const contents: string[] = [];
+    for (const _ of replies) contents.push((await model.complete({ messages }, { signal })).content);
+    expect(contents).toEqual(["", "前面的话", "", "答案"]);
+  });
 });
 
 describe("withMedia", () => {
@@ -413,17 +442,39 @@ describe("a turn as a taugraph run", () => {
     expect(events.every((e) => e.runId === runId)).toBe(true);
   });
 
-  it("gives the model one last call without tools after six rounds of tools", async () => {
+  it("asks for words, not tools, on the last call after six rounds of tools", async () => {
     const model = scriptedModel((r) => {
       if (isExtraction(r)) return '{"facts":[]}';
-      return r.tools ? call("list_memories", {}) : "说完了";
+      return r.toolChoice !== "none" ? call("list_memories", {}) : "说完了";
     });
     const { moqi } = harness({ model });
     expect(await moqi.chat("查一下")).toBe("说完了");
     const turn = model.requests.filter((r) => !isExtraction(r));
     expect(turn).toHaveLength(7);
-    expect(turn.slice(0, 6).every((r) => (r.tools?.length ?? 0) > 0)).toBe(true);
-    expect(turn[6]).not.toHaveProperty("tools");
+    expect(turn.slice(0, 6).every((r) => (r.tools?.length ?? 0) > 0 && r.toolChoice === undefined)).toBe(true);
+    expect(turn[6]?.tools?.length ?? 0).toBeGreaterThan(0);
+    expect(turn[6]?.toolChoice).toBe("none");
+    expect(turn[6]?.messages.at(-1)).toEqual({ role: "user", content: AGENT.lastRoundNote });
+    const stored = moqi.store.all().flatMap((e) => (e.type === "message" ? [e.text] : []));
+    expect(stored).not.toContain(AGENT.lastRoundNote);
+  });
+
+  it("falls back when the last answer was only tool-call markup", async () => {
+    const { openAICompatible } = await import("../src/core/model.js");
+    let n = 0;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { tool_choice?: unknown };
+      const message =
+        body.tool_choice === "none"
+          ? { content: DSML }
+          : {
+              content: null,
+              tool_calls: [{ id: `c${++n}`, type: "function", function: { name: "list_memories", arguments: "{}" } }],
+            };
+      return new Response(JSON.stringify({ choices: [{ message }] }));
+    }) as typeof globalThis.fetch;
+    const { moqi } = harness({ model: openAICompatible({ baseURL: "http://x/v1", model: "deepseek-flash", fetch }) });
+    expect(await moqi.chat("查")).toBe("（我这次没想好怎么回答，换个说法再试试？）");
   });
 
   it("answers even when the trace cannot be stored", async () => {

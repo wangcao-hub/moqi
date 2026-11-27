@@ -50,7 +50,7 @@ export function openAICompatible(options: OpenAICompatibleOptions): LLMModel {
     async complete(request, { signal }) {
       const sent = options.noThink === true && request.reasoning === "off" ? withNoThink(request) : request;
       const response = await endpoint.complete(sent, { signal });
-      return { ...response, content: stripThinking(response.content) };
+      return { ...response, content: stripToolMarkup(stripThinking(response.content)) };
     },
   };
 }
@@ -76,6 +76,21 @@ function withNoThink(request: LLMRequest): LLMRequest {
 /** Reasoning models (Qwen3, DeepSeek-R1 via some servers) put their thoughts in <think> tags. */
 export function stripThinking(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+}
+
+/**
+ * Tool-call markup some models write into the answer instead of calling the tool: DeepSeek's DSML blocks
+ * (`<｜｜DSML｜｜ calls>` … `</｜｜DSML｜｜ calls>`, the bar is U+FF5C) and its older `<｜tool▁calls▁begin｜>` …
+ * `<｜tool▁calls▁end｜>`. An unclosed block is cut to the end of the text.
+ */
+const TOOL_MARKUP = [
+  /<[｜|]{1,2}\s*DSML\s*[｜|]{1,2}\s*calls\s*>[\s\S]*?(?:<\/[｜|]{1,2}\s*DSML\s*[｜|]{1,2}\s*calls\s*>|$)/g,
+  /<｜tool▁calls▁begin｜>[\s\S]*?(?:<｜tool▁calls▁end｜>|$)/g,
+];
+
+/** The answer without tool-call markup the model wrote as text. */
+export function stripToolMarkup(text: string): string {
+  return TOOL_MARKUP.reduce((t, pattern) => t.replace(pattern, ""), text).trim();
 }
 
 const NEVER = new AbortController().signal;

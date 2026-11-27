@@ -10,7 +10,15 @@ import type { SiteGrant } from "./sites.js";
 import { studySection } from "./study.js";
 import { newId } from "./types.js";
 
-export const AGENT = { maxToolRounds: 6, historyMessages: 12, imageMessages: 3, replyImages: 8 } as const;
+export const AGENT = {
+  maxToolRounds: 6,
+  historyMessages: 12,
+  imageMessages: 3,
+  replyImages: 8,
+  /** Ends the last request of a turn, after six rounds of tools: the model answers in words from what it has. */
+  lastRoundNote:
+    "这一轮的工具调用次数已经用完了。请根据上面已经拿到的结果，直接用文字回答用户；没查到的就说还没查到，不要再调用任何工具。",
+} as const;
 
 const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
 
@@ -125,8 +133,9 @@ export async function chatTurn(
     model,
     tools,
     system: systemPrompt(moqi),
-    maxRounds: AGENT.maxToolRounds + 1, // the last call goes without tools, so the model answers in words
+    maxRounds: AGENT.maxToolRounds + 1, // the last call may use no tool, so the model answers in words
     lastRound: "answer",
+    lastRoundNote: AGENT.lastRoundNote,
     temperature: 0.3,
   });
   const run = newId("run", moqi.clock);

@@ -23,6 +23,7 @@ export {
   type OpenAICompatibleOptions,
   openAICompatible,
   stripThinking,
+  stripToolMarkup,
 } from "./model.js";
 export { Moqi, type MoqiOptions, type TickReport } from "./moqi.js";
 export {

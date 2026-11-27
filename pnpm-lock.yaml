@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       taugraph:
-        specifier: ^0.4.1
-        version: 0.4.1
+        specifier: ^0.4.2
+        version: 0.4.2
       zod:
         specifier: ^4
         version: 4.6.7
@@ -764,8 +764,8 @@ packages:
   std-env@4.3.0:
     resolution: {integrity: sha512-OtU/EgQ1kIm5KwqQpBC6ZEMXrZRui11w8zgfTWp8cdO9B8OaPsbA8bTHO2P+HNo1VlUTGMVBwPhydu6poeXiag==}
 
-  taugraph@0.4.1:
-    resolution: {integrity: sha512-Ei5i9e+EvyyxmG/okakbEVV1c1tx7xqDU6u5EcZpHupM2b5o6vv2VpPQjDFL2pjy0Mo0cFJbXFXGt+ZrRh0qBw==}
+  taugraph@0.4.2:
+    resolution: {integrity: sha512-XkW9LM3Z7czj1xemvsgBdhpegjhHXepIbZahfMwyVy32No7PdOXx8ADuTOBIGllClw8/amtucMPZfe/FiL6bqg==}
     engines: {node: '>=22'}
 
   tinybench@6.2.4:
@@ -1569,7 +1569,7 @@ snapshots:
 
   std-env@4.3.0: {}
 
-  taugraph@0.4.1: {}
+  taugraph@0.4.2: {}
 
   tinybench@6.2.4: {}
 
