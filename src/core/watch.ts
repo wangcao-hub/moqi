@@ -1,5 +1,6 @@
 // A watch run is a taugraph flow: check (read) -> compare (code) -> alert (write).
 // The alert is a `write` step, so replaying a run never notifies the user twice.
+import type { TraceEvent } from "taugraph";
 import { createGraph } from "taugraph";
 import { CodeNode } from "taugraph/nodes";
 import { z } from "zod";
@@ -64,8 +65,12 @@ export function watchGraph(watch: Watch, deps: WatchDeps) {
   });
 }
 
-export async function runWatch(watch: Watch, deps: WatchDeps): Promise<WatchOutcome> {
-  const result = await watchGraph(watch, deps).run({});
+export async function runWatch(
+  watch: Watch,
+  deps: WatchDeps,
+  options: { readonly runId?: string; readonly onEvent?: (event: TraceEvent) => void } = {},
+): Promise<WatchOutcome> {
+  const result = await watchGraph(watch, deps).run({}, options);
   if (result.status !== "completed") throw new Error(`watch ${watch.id} paused unexpectedly`);
   const s = result.state;
   return { value: s.value ?? "", headline: s.headline ?? "", changed: s.changed, alerted: s.alerted };

@@ -203,7 +203,16 @@ export type EventBody =
   | { type: "site.remembered"; host: string }
   | { type: "site.forgotten"; host: string }
   | { type: "watch.created"; watch: Watch }
-  | { type: "watch.ran"; watchId: string; value: string; headline: string; changed: boolean; nextAt: number }
+  | {
+      type: "watch.ran";
+      watchId: string;
+      value: string;
+      headline: string;
+      changed: boolean;
+      nextAt: number;
+      /** The taugraph run of this check, whose trace has each step. */
+      run?: string;
+    }
   | { type: "watch.cancelled"; watchId: string }
   | { type: "todo.added"; todo: Todo }
   | { type: "todo.updated"; todoId: string; text?: string; day?: string; remindAt?: number | null }

@@ -633,17 +633,28 @@ export class Moqi {
     const due = [...this.state.watches.values()].filter((w) => w.nextAt <= now).sort((a, b) => a.nextAt - b.nextAt);
     for (const watch of due) {
       const nextAt = nextRun(watch.schedule, now);
+      const run = newId("run", this.clock);
       try {
-        const outcome = await runWatch(watch, {
-          callTool: async (name, args) => {
-            const tool = this.tools.get(name);
-            if (tool?.effect !== "read") throw new Error(`托管事务只能用只读工具，${name} 不行`);
-            return tool.run(tool.input.parse(args), { now: () => this.clock.now(), state: this.state });
+        const outcome = await runWatch(
+          watch,
+          {
+            callTool: async (name, args) => {
+              const tool = this.tools.get(name);
+              if (tool?.effect !== "read") throw new Error(`托管事务只能用只读工具，${name} 不行`);
+              return tool.run(tool.input.parse(args), { now: () => this.clock.now(), state: this.state });
+            },
+            alert: (headline) => {
+              void this.offer({
+                kind: "watch.alert",
+                title: watch.title,
+                body: headline,
+                value: 0.75,
+                urgency: "today",
+              });
+            },
           },
-          alert: (headline) => {
-            void this.offer({ kind: "watch.alert", title: watch.title, body: headline, value: 0.75, urgency: "today" });
-          },
-        });
+          { runId: run, ...(this.onTrace && { onEvent: this.onTrace }) },
+        );
         this.emit({
           type: "watch.ran",
           watchId: watch.id,
@@ -652,6 +663,7 @@ export class Moqi {
           headline: outcome.headline,
           changed: outcome.changed,
           nextAt,
+          run,
         });
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
@@ -663,6 +675,7 @@ export class Moqi {
           headline: `这次没查成：${reason}`,
           changed: false,
           nextAt,
+          run,
         });
       }
     }

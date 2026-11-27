@@ -1,3 +1,4 @@
+import type { TraceEvent } from "taugraph";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineTool } from "../src/core/plugin.js";
@@ -120,5 +121,40 @@ describe("watches", () => {
     expect(new Date(nextRun({ every: "week", days: [1], at: "08:00" }, at)).toISOString()).toBe(
       "2026-11-23T00:00:00.000Z",
     );
+  });
+  it("traces every run and links it from watch.ran, also when the check fails", async () => {
+    const price = priceTool();
+    const events: TraceEvent[] = [];
+    const { moqi, clock } = harness({
+      plugins: [price.plugin],
+      start: "2026-11-20T08:00:00+08:00",
+      onTrace: (e) => events.push(e),
+    });
+    await moqi.callTool(
+      "watch_create",
+      { title: "机票", schedule: { every: "hours", hours: 1 }, tool: "flight_price" },
+      { byUser: true },
+    );
+    clock.advance(3_600_001);
+    await moqi.tick();
+    price.state.fail = true;
+    clock.advance(3_600_001);
+    await moqi.tick();
+    const ran = moqi.store.all().filter((e) => e.type === "watch.ran");
+    expect(ran).toHaveLength(2);
+    const [ok, failed] = ran.map((e) => (e as { run?: string }).run);
+    const of = (run: string | undefined) => events.filter((e) => e.runId === run);
+    expect(of(ok).map((e) => (e.type === "enter" ? e.nodeId : e.type))).toEqual([
+      "run_start",
+      "check",
+      "exit",
+      "compare",
+      "exit",
+      "alert",
+      "exit",
+      "run_end",
+    ]);
+    expect(of(ok).find((e) => e.type === "enter" && e.nodeId === "alert")?.meta).toMatchObject({ effect: "write" });
+    expect(of(failed).at(-1)).toMatchObject({ type: "run_end", meta: { status: "failed" } });
   });
 });
