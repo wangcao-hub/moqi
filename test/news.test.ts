@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { State } from "../src/core/state.js";
-import { newsPlugin, parseFeed } from "../src/plugins/news.js";
+import { articleText, newsPlugin, parseFeed } from "../src/plugins/news.js";
 
 const RSS = `<?xml version="1.0"?><rss version="2.0"><channel><title>Feed</title>
 <item><title><![CDATA[苹果发布 <b>新</b> 手机]]></title><link>https://a.example/1</link><pubDate>Fri, 20 Nov 2026 09:00:00 +0800</pubDate></item>
@@ -61,5 +61,17 @@ describe("news feeds", () => {
     down = true;
     expect((await plugin.context?.(ctx))?.links?.n1?.title).toBe("Atom 条目"); // every feed failed: keep the old ones
     expect(calls).toBe(6);
+  });
+
+  it("reads an article whose markup is never closed, and stays fast on such pages", () => {
+    // A block that is never closed stays; a closed one goes, whatever the case of its tags.
+    expect(articleText("<body><NAV>菜单</nav><p>正文</p><aside>未关")).toBe("正文 未关");
+    // An <article> that is never closed falls back to <main>.
+    expect(articleText("<article>未关<main><p>主要的</p></main>")).toBe("主要的");
+    // A comment that is never closed runs to the end, as in a browser.
+    expect(articleText("<p>前</p><!-- 没有结束 <p>后</p>")).toBe("前");
+    const start = performance.now();
+    for (const html of ["<!--".repeat(500_000), "<nav>".repeat(400_000), "<main ".repeat(330_000)]) articleText(html);
+    expect(performance.now() - start).toBeLessThan(1500);
   });
 });

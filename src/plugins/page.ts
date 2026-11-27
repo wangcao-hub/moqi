@@ -2,7 +2,7 @@
 // http(s) addresses are fetched, and every redirect is checked again. What a public name resolves to is not
 // visible here (plugins use no Node APIs), so a name pointing into the local network (DNS rebinding) gets
 // through; moqi's own console still needs its key.
-import { articleText, decode } from "./news.js";
+import { articleText, decode, innerHtml } from "./news.js";
 
 export const PAGE = { maxBytes: 2_000_000, timeoutMs: 20_000, maxRedirects: 5 } as const;
 
@@ -51,7 +51,8 @@ export function addressProblem(url: string): string | undefined {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "只能读 http 和 https 的网页";
   if (parsed.username || parsed.password) return "网址里不能带用户名或密码";
   // The URL parser already turned 127.1, 2130706433 and 0x7f.0.0.1 into 127.0.0.1, and IPv6 into its short form.
-  const host = parsed.hostname.toLowerCase().replace(/\.$/, "");
+  let host = parsed.hostname.toLowerCase();
+  while (host.endsWith(".")) host = host.slice(0, -1); // a loop: /\.+$/ is slow on a long run of dots
   if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return LOCAL;
   const v4 = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(host);
   if (v4 && v4Local(Number(v4[1]), Number(v4[2]))) return LOCAL;
@@ -82,9 +83,18 @@ async function readBytes(response: Response, max: number): Promise<Uint8Array> {
   return bytes;
 }
 
-/** The text in the charset the server declared, UTF-8 when it declared none or one this runtime lacks. */
-function textOf(bytes: Uint8Array, type: string): string {
-  const charset = /charset=["']?([\w-]+)/.exec(type)?.[1] ?? "utf-8";
+/** The charset an HTML page declares in a <meta> tag in its first 1024 bytes. */
+function metaCharset(bytes: Uint8Array): string | undefined {
+  const head = String.fromCharCode(...bytes.subarray(0, 1024)); // bytes as Latin-1: enough to find ASCII tags
+  return /<meta[^<>]*charset=["']?([\w-]+)/i.exec(head)?.[1];
+}
+
+/**
+ * The text in the charset the server declared, or for HTML the one its <meta> declares; UTF-8 when there is
+ * none or the runtime lacks it.
+ */
+function textOf(bytes: Uint8Array, type: string, html: boolean): string {
+  const charset = /charset=["']?([\w-]+)/.exec(type)?.[1] ?? (html ? metaCharset(bytes) : undefined) ?? "utf-8";
   let decoder: TextDecoder;
   try {
     decoder = new TextDecoder(charset);
@@ -127,9 +137,9 @@ async function download(url: string, doFetch: typeof fetch): Promise<PageText> {
       await response.body?.cancel();
       throw new PageProblem("这不是网页，读不了");
     }
-    const body = textOf(await readBytes(response, PAGE.maxBytes), type);
+    const body = textOf(await readBytes(response, PAGE.maxBytes), type, html);
     if (!html) return { title: "", text: body.trim() };
-    const title = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(body)?.[1];
+    const title = innerHtml(body, "title");
     return { title: title ? decode(title).slice(0, 200) : "", text: articleText(body) };
   }
 }
@@ -141,6 +151,6 @@ export async function fetchPage(url: string, doFetch: typeof fetch): Promise<Pag
   } catch (error) {
     if (error instanceof PageProblem) throw new Error(error.message);
     const late = error instanceof Error && error.name === "TimeoutError";
-    throw new Error(late ? "这个网页太久没有打开" : "这个网页打不开");
+    throw new Error(late ? "这个网页太久没有打开" : "这个网页打不开", { cause: error });
   }
 }

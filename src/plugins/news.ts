@@ -35,11 +35,29 @@ export interface NewsOptions {
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 
+// `decode` and `articleText` read web pages: untrusted, up to 2 MB, and a regular expression cannot be stopped
+// once it runs. So they never scan the rest of the text from each of many starting points (a lazy `[\s\S]*?`
+// up to a closing tag, or a `[^>]*` that may run past the next `<`), which takes minutes on a page of
+// unclosed tags. Closing tags are found with indexOf instead, and a search that failed is not repeated: it
+// would fail again from any later point.
+
+/** `text` with CDATA sections replaced by their content. */
+function unwrapCdata(text: string): string {
+  let out = "";
+  let at = 0;
+  for (;;) {
+    const open = text.indexOf("<![CDATA[", at);
+    const close = open < 0 ? -1 : text.indexOf("]]>", open + 9);
+    if (close < 0) return out + text.slice(at);
+    out += text.slice(at, open) + text.slice(open + 9, close);
+    at = close + 3;
+  }
+}
+
 /** Plain text from a bit of HTML or XML: CDATA and entities decoded, tags dropped, white space folded. */
 export function decode(text: string): string {
-  return text
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
-    .replace(/<[^>]+>/g, "")
+  return unwrapCdata(text)
+    .replace(/<[^<>]+>/g, "")
     .replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi, (m, e: string) => {
       if (e[0] === "#") {
         const code = e[1]?.toLowerCase() === "x" ? Number.parseInt(e.slice(2), 16) : Number(e.slice(1));
@@ -65,17 +83,61 @@ function atomLink(block: string): string | undefined {
   return pick ? /\bhref=["']([^"']+)["']/.exec(pick)?.[1] : undefined;
 }
 
+/** `html` with only A to Z lower-cased, so that every index in it stays the same. */
+function lowerAscii(html: string): string {
+  return html.replace(/[A-Z]+/g, (s) => s.toLowerCase());
+}
+
+/** What is between the first <name …> and the </name> after it, or undefined when there is no such pair. */
+export function innerHtml(html: string, name: string): string | undefined {
+  const open = new RegExp(`<${name}\\b[^<>]*>`, "i").exec(html);
+  if (!open) return undefined;
+  const start = open.index + open[0].length;
+  const end = lowerAscii(html).indexOf(`</${name}>`, start);
+  return end < 0 ? undefined : html.slice(start, end);
+}
+
+/** `html` with each comment replaced by a space; a comment that is never closed runs to the end, as in a browser. */
+function withoutComments(html: string): string {
+  let out = "";
+  let at = 0;
+  for (;;) {
+    const open = html.indexOf("<!--", at);
+    if (open < 0) return out + html.slice(at);
+    out += `${html.slice(at, open)} `;
+    const close = html.indexOf("-->", open + 4);
+    if (close < 0) return out;
+    at = close + 3;
+  }
+}
+
+const CHROME = /<(script|style|noscript|svg|nav|header|footer|aside|form|iframe)\b/gi;
+
+/** `html` with each <script>…</script>, <nav>…</nav> and the like replaced by a space; one never closed stays. */
+function withoutChrome(html: string): string {
+  const lower = lowerAscii(html);
+  const unclosed = new Set<string>();
+  let out = "";
+  let at = 0;
+  for (const open of html.matchAll(CHROME)) {
+    const name = (open[1] ?? "").toLowerCase();
+    if (open.index < at || unclosed.has(name)) continue; // inside a block already cut, or known to have no end
+    const close = lower.indexOf(`</${name}>`, open.index + open[0].length);
+    if (close < 0) {
+      unclosed.add(name);
+      continue;
+    }
+    out += `${html.slice(at, open.index)} `;
+    at = close + name.length + 3;
+  }
+  return out + html.slice(at);
+}
+
 /** The readable text of an article page: the <article> (or <main>, or <body>) without scripts, styles and chrome. */
 export function articleText(html: string): string {
-  const cleaned = html
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<(script|style|noscript|svg|nav|header|footer|aside|form|iframe)\b[\s\S]*?<\/\1>/gi, " ");
-  const part =
-    /<article\b[^>]*>([\s\S]*?)<\/article>/i.exec(cleaned)?.[1] ??
-    /<main\b[^>]*>([\s\S]*?)<\/main>/i.exec(cleaned)?.[1] ??
-    /<body\b[^>]*>([\s\S]*?)<\/body>/i.exec(cleaned)?.[1] ??
-    cleaned;
-  return decode(part.replace(/<\/(p|div|li|h[1-6]|br|tr)>|<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, " "));
+  const cleaned = withoutChrome(withoutComments(html));
+  const part = innerHtml(cleaned, "article") ?? innerHtml(cleaned, "main") ?? innerHtml(cleaned, "body") ?? cleaned;
+  return decode(part.replace(/<\/(p|div|li|h[1-6]|br|tr)>|<br\s*\/?>/gi, "\n").replace(/<[^<>]+>/g, " "));
 }
 
 /** RSS 2.0 and Atom, read leniently: a broken item is skipped, not the whole feed. */

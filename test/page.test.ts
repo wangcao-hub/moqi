@@ -5,10 +5,16 @@ const LOCAL = "不能读本机或局域网里的地址";
 
 /** A fake web: each address answers with what `pages` says; every request is recorded. */
 function web(pages: Record<string, () => Response>) {
-  const seen: { url: string; redirect: RequestRedirect | undefined; auth: string | null }[] = [];
+  const seen: {
+    url: string;
+    redirect: RequestRedirect | undefined;
+    auth: string | null;
+    signal: AbortSignal | null | undefined;
+  }[] = [];
   const impl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
-    seen.push({ url, redirect: init?.redirect, auth: new Headers(init?.headers).get("authorization") });
+    const auth = new Headers(init?.headers).get("authorization");
+    seen.push({ url, redirect: init?.redirect, auth, signal: init?.signal });
     const page = pages[url];
     return page ? page() : new Response("not found", { status: 404 });
   }) as typeof fetch;
@@ -46,6 +52,7 @@ describe("addresses moqi may fetch itself", () => {
     for (const url of [
       "http://localhost:6674/api/state",
       "http://LOCALHOST./",
+      "http://localhost../",
       "http://app.localhost/",
       "http://nas.local/",
       "http://nas.local./",
@@ -82,7 +89,9 @@ describe("reading a page moqi fetches itself", () => {
       title: "深圳 & 暴雨",
       text: "气象台说明天有暴雨。",
     });
-    expect(net.seen).toEqual([{ url: "https://news.example/a", redirect: "manual", auth: null }]);
+    expect(net.seen).toEqual([
+      { url: "https://news.example/a", redirect: "manual", auth: null, signal: expect.any(AbortSignal) },
+    ]);
   });
 
   it("follows a redirect to a public page, checking the new address", async () => {
@@ -128,9 +137,25 @@ describe("reading a page moqi fetches itself", () => {
     await expect(fetchPage("https://a.example/f.pdf", net.fetch)).rejects.toThrow("这不是网页，读不了");
   });
 
-  it("reads at most 2 MB, leaving out a character cut at the limit", async () => {
-    const net = web({ "https://a.example/big": page("字".repeat(1_000_000), "text/plain; charset=utf-8") }); // 3 MB
+  it("reads at most 2 MB, leaving out a character cut at the limit, and does not download the rest", async () => {
+    const bytes = new TextEncoder().encode("字".repeat(1_048_576)); // 3 MB, served in 48 chunks of 64 KB
+    const size = 65_536;
+    let pulled = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const at = pulled++ * size;
+        if (at >= bytes.length) controller.close();
+        else controller.enqueue(bytes.slice(at, at + size));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const net = web({ "https://a.example/big": page(body, "text/plain; charset=utf-8") });
     expect((await fetchPage("https://a.example/big", net.fetch)).text).toBe("字".repeat(666_666));
+    expect(pulled).toBeLessThanOrEqual(33); // 31 chunks make 2 MB; the stream may have queued one or two more
+    expect(cancelled).toBe(true);
   });
 
   it("decodes a page in the charset it declares", async () => {
@@ -139,16 +164,58 @@ describe("reading a page moqi fetches itself", () => {
     expect((await fetchPage("https://a.example/gbk", net.fetch)).text).toBe("中文");
   });
 
+  it("decodes an HTML page in the charset its <meta> declares, when the header declares none", async () => {
+    const ascii = (text: string) => [...new TextEncoder().encode(text)];
+    const gbkPage = (meta: string) =>
+      page(
+        new Uint8Array([
+          ...ascii(`<html><head>${meta}<title>`),
+          ...[0xd6, 0xd0, 0xce, 0xc4], // 中文 in GBK
+          ...ascii("</title></head><body><p>"),
+          ...[0xd5, 0xfd, 0xce, 0xc4], // 正文 in GBK
+          ...ascii("</p></body></html>"),
+        ]),
+        "text/html",
+      );
+    const net = web({
+      "https://a.example/a": gbkPage('<meta charset="gbk">'),
+      "https://a.example/b": gbkPage('<meta http-equiv="Content-Type" content="text/html; charset=gbk">'),
+    });
+    expect(await fetchPage("https://a.example/a", net.fetch)).toEqual({ title: "中文", text: "正文" });
+    expect(await fetchPage("https://a.example/b", net.fetch)).toEqual({ title: "中文", text: "正文" });
+  });
+
+  it("stays fast on pages built to be slow", async () => {
+    const hostile = [
+      "<".repeat(2_000_000),
+      "<!--".repeat(500_000),
+      "<nav>".repeat(400_000),
+      "<title>".repeat(280_000),
+      "<article ".repeat(220_000),
+      "<article>".repeat(220_000),
+      "<![CDATA[".repeat(220_000),
+    ];
+    const pages = Object.fromEntries(hostile.map((html, i) => [`https://slow.example/${i}`, page(html)]));
+    const net = web(pages);
+    const start = performance.now();
+    for (const url of Object.keys(pages)) expect(await fetchPage(url, net.fetch), url).toHaveProperty("text");
+    expect(addressProblem(`http://a${".".repeat(200_000)}a/`)).toBeUndefined();
+    expect(performance.now() - start).toBeLessThan(3000); // the regular expressions this replaced took minutes
+  });
+
   it("says why a page cannot be read", async () => {
     const net = web({ "https://a.example/gone": () => new Response("no", { status: 410 }) });
     await expect(fetchPage("https://a.example/gone", net.fetch)).rejects.toThrow("这个网页打不开（410）");
+    const failed = new TypeError("fetch failed");
     const down = (async () => {
-      throw new TypeError("fetch failed");
+      throw failed;
     }) as typeof fetch;
     await expect(fetchPage("https://a.example/", down)).rejects.toThrow(/^这个网页打不开$/);
+    await expect(fetchPage("https://a.example/", down)).rejects.toHaveProperty("cause", failed);
     const slow = (async () => {
       throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
     }) as typeof fetch;
     await expect(fetchPage("https://a.example/", slow)).rejects.toThrow("这个网页太久没有打开");
+    await expect(fetchPage("https://a.example/", slow)).rejects.toHaveProperty("cause.name", "TimeoutError");
   });
 });
