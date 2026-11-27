@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Moqi } from "../src/core/moqi.js";
-import { loadConfig, TEMPLATE, writeTemplate } from "../src/node/config.js";
+import { ConfigSchema, loadConfig, searchSetup, TEMPLATE, writeTemplate } from "../src/node/config.js";
 import { acquireLock, fileEventStore } from "../src/node/file-store.js";
 import { openHome, terminalAnswer } from "../src/node/home.js";
 import { desktopNotifier } from "../src/node/notify.js";
@@ -131,6 +131,99 @@ describe("config", () => {
     });
     expect(withPlugins.moqi.plugins.map((p) => p.name)).toEqual(["weather", "calendar", "news", "mcp"]);
     expect(withPlugins.moqi.tool("weather")).toBeDefined();
+  });
+});
+
+describe("web search setup", () => {
+  const deepseek = { baseURL: "https://api.deepseek.com/v1", model: "deepseek-chat", apiKey: "sk-model" };
+  const keyless = { baseURL: "https://api.deepseek.com/v1", model: "deepseek-chat" };
+  const local = { baseURL: "http://127.0.0.1:11434/v1", model: "qwen3:4b" };
+  const config = (raw: Record<string, unknown>) => ConfigSchema.parse(raw);
+
+  it("is on by itself with DeepSeek's model, using the model's key", () => {
+    expect(searchSetup(config({ model: deepseek }))).toEqual({ on: true, provider: "deepseek", apiKey: "sk-model" });
+    expect(searchSetup(config({ model: { ...deepseek, baseURL: "https://api.deepseek.com" } }))).toMatchObject({
+      on: true,
+    });
+    expect(searchSetup(config({ model: { ...deepseek, baseURL: "https://api.deepseek.com.evil.test/v1" } }))).toEqual({
+      on: false,
+      provider: "deepseek",
+    });
+    expect(searchSetup(config({ model: local }))).toEqual({ on: false, provider: "deepseek" });
+    expect(searchSetup(config({}))).toEqual({ on: false, provider: "deepseek" });
+  });
+
+  it("stays off once turned off, and says which key is missing", () => {
+    expect(searchSetup(config({ model: deepseek, search: { enabled: false } }))).toEqual({
+      on: false,
+      provider: "deepseek",
+    });
+    expect(searchSetup(config({ model: keyless }))).toEqual({
+      on: false,
+      provider: "deepseek",
+      problem: "需要填 DeepSeek 的 key",
+    });
+    expect(searchSetup(config({ model: local, search: { enabled: true, provider: "deepseek" } }))).toEqual({
+      on: false,
+      provider: "deepseek",
+      problem: "需要填 DeepSeek 的 key",
+    });
+    expect(searchSetup(config({ model: local, search: { provider: "deepseek", apiKey: "sk-search" } }))).toEqual({
+      on: true,
+      provider: "deepseek",
+      apiKey: "sk-search",
+    });
+    // The model's key never goes to Baidu.
+    expect(searchSetup(config({ model: deepseek, search: { provider: "baidu" } }))).toEqual({
+      on: false,
+      provider: "baidu",
+      problem: "需要填 AppBuilder API Key",
+    });
+    expect(searchSetup(config({ model: local, search: { provider: "baidu", apiKey: "bce" } }))).toEqual({
+      on: true,
+      provider: "baidu",
+      apiKey: "bce",
+    });
+  });
+
+  it("takes the key from MOQI_SEARCH_API_KEY, without turning search on", () => {
+    const dir = tmp();
+    const write = (c: unknown) => writeFileSync(join(dir, "config.json"), JSON.stringify(c));
+    const env = { MOQI_SEARCH_API_KEY: "sk-env" };
+    write({ model: deepseek });
+    expect(searchSetup(loadConfig(dir, env))).toEqual({ on: true, provider: "deepseek", apiKey: "sk-env" });
+    write({ model: local, search: { provider: "baidu", apiKey: "bce-file" } });
+    expect(searchSetup(loadConfig(dir, env))).toEqual({ on: true, provider: "baidu", apiKey: "sk-env" });
+    write({ model: local });
+    expect(searchSetup(loadConfig(dir, env))).toEqual({ on: false, provider: "deepseek" });
+    write({ model: deepseek, search: { enabled: false } });
+    expect(searchSetup(loadConfig(dir, env))).toEqual({ on: false, provider: "deepseek" });
+  });
+
+  it("gives a home with DeepSeek's model the two tools, searching with the model's key", async () => {
+    const dir = tmp();
+    const sent: { url: string; auth: string | null }[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      sent.push({ url: String(input), auth: new Headers(init?.headers).get("authorization") });
+      return Response.json({ results: [{ title: "深圳天气", url: "https://w.example/1", summary: "晴" }] });
+    }) as typeof fetch;
+    const base = { ...loadConfig(dir, {}), model: deepseek };
+    const home = openHome({ home: dir, config: base, lock: false, agents: false, mcp: false, fetch: fetchImpl });
+    expect(home.moqi.plugins.map((p) => p.name)).toEqual(["weather", "news", "search", "mcp"]);
+    expect(await home.moqi.callTool("web_search", { query: "深圳天气" }, { byUser: true })).toContain("深圳天气");
+    expect(sent).toEqual([{ url: "https://api.deepseek.com/v1/tools/search", auth: "Bearer sk-model" }]);
+    home.close();
+
+    const off = openHome({
+      home: dir,
+      config: { ...base, search: { enabled: false, provider: "deepseek" } },
+      lock: false,
+      agents: false,
+      mcp: false,
+    });
+    expect(off.moqi.tool("web_search")).toBeUndefined();
+    expect(off.moqi.tool("web_read")).toBeUndefined();
+    off.close();
   });
 });
 

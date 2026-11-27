@@ -179,6 +179,7 @@ export function searchPlugin(options: SearchOptions): Plugin {
   const service = searchService(options);
   return {
     name: "search",
+    guide: SEARCH.guide,
     tools: [
       defineTool({
         name: "web_search",

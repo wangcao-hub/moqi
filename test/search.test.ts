@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import { systemPrompt } from "../src/core/agent.js";
 import { defineTool, type Plugin } from "../src/core/plugin.js";
 import { SEARCH, searchPlugin, searchService } from "../src/plugins/search.js";
 import { call, harness, scriptedModel } from "./helpers.js";
@@ -271,5 +272,15 @@ describe("web_search and web_read", () => {
     expect(asked).toHaveLength(1); // only the shell command, asked again after the search
     expect(details[0]).toMatch(/^这一轮读到了外部内容/);
     expect(ran).toEqual([]);
+  });
+});
+
+describe("the chat prompt", () => {
+  it("tells the model to search before opening the browser, only while search is on", () => {
+    const on = harness({ plugins: [searchPlugin({ provider: "deepseek", apiKey: "k" })] });
+    expect(systemPrompt(on.moqi)).toContain(`\n- ${SEARCH.guide}`);
+    expect(systemPrompt(on.moqi)).toMatch(/## 做事的方式[\s\S]*先用 web_search 搜/);
+    const off = harness();
+    expect(systemPrompt(off.moqi)).not.toContain("web_search");
   });
 });

@@ -34,7 +34,9 @@ const GUIDE = `## 做事的方式
 export function systemPrompt(moqi: Moqi): string {
   const now = new Date(moqi.clock.now());
   const time = `现在是 ${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 周${WEEKDAYS[now.getDay()]} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}。`;
-  return [moqi.persona, time, promptSection(moqi.state, moqi.clock.now()), studySection(moqi.state), GUIDE]
+  // Each plugin may add a line about when to use its tools, e.g. searching before opening the browser.
+  const guide = [GUIDE, ...moqi.plugins.flatMap((p) => (p.guide ? [`- ${p.guide}`] : []))].join("\n");
+  return [moqi.persona, time, promptSection(moqi.state, moqi.clock.now()), studySection(moqi.state), guide]
     .filter(Boolean)
     .join("\n\n");
 }

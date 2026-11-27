@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { NEWS_FEEDS } from "../plugins/news.js";
+import type { SearchProvider } from "../plugins/search.js";
 
 const time = z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/, "时间要写成 HH:MM");
 
@@ -78,6 +79,14 @@ export const ConfigSchema = z.object({
     .object({ feeds: z.array(z.object({ name: z.string().min(1).max(40), url: z.string().url() })).max(20) })
     // On unless turned off with an empty list, so an existing config gets news after an upgrade too.
     .default({ feeds: NEWS_FEEDS.slice(0, 3) }),
+  /** Web search through a service. Absent: on when the model is DeepSeek's own, with the model's key. */
+  search: z
+    .object({
+      enabled: z.boolean().default(true),
+      provider: z.enum(["deepseek", "baidu"]).default("deepseek"),
+      apiKey: z.string().optional(),
+    })
+    .optional(),
 });
 export type Config = z.infer<typeof ConfigSchema>;
 
@@ -99,9 +108,26 @@ export function expandHome(path: string): string {
   return path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
 }
 
-/** ~/.moqi/config.json, then MOQI_BASE_URL / MOQI_MODEL / MOQI_API_KEY on top. Keys stay out of the event log. */
+/**
+ * ~/.moqi/config.json, then MOQI_BASE_URL / MOQI_MODEL / MOQI_API_KEY / MOQI_SEARCH_API_KEY on top. Keys stay
+ * out of the event log.
+ */
 export function loadConfig(home: string, env: NodeJS.ProcessEnv = process.env): Config {
-  const config = readConfigFile(home);
+  const config = withModelEnv(readConfigFile(home), env);
+  const key = env.MOQI_SEARCH_API_KEY;
+  // The key replaces the one search would use; it never turns search on where it would be off.
+  if (!key || (!config.search && !isDeepSeekModel(config))) return config;
+  return {
+    ...config,
+    search: {
+      enabled: config.search?.enabled ?? true,
+      provider: config.search?.provider ?? "deepseek",
+      apiKey: key,
+    },
+  };
+}
+
+function withModelEnv(config: Config, env: NodeJS.ProcessEnv): Config {
   if (env.MOQI_BASE_URL && env.MOQI_MODEL) {
     return {
       ...config,
@@ -114,6 +140,38 @@ export function loadConfig(home: string, env: NodeJS.ProcessEnv = process.env): 
   }
   if (config.model && env.MOQI_API_KEY) return { ...config, model: { ...config.model, apiKey: env.MOQI_API_KEY } };
   return config;
+}
+
+/** Whether the model is DeepSeek's own API, whose key also pays for DeepSeek's web search. */
+export function isDeepSeekModel(config: Config): boolean {
+  const url = config.model?.baseURL;
+  if (!url) return false;
+  try {
+    return new URL(url).hostname === "api.deepseek.com";
+  } catch {
+    return false;
+  }
+}
+
+export type SearchSetup =
+  | { readonly on: true; readonly provider: SearchProvider; readonly apiKey: string }
+  | { readonly on: false; readonly provider: SearchProvider; readonly problem?: string };
+
+/** Whether moqi searches the web, with which service and key; when a key is missing, what the settings say. */
+export function searchSetup(config: Config): SearchSetup {
+  const search = config.search;
+  const provider = search?.provider ?? "deepseek";
+  if (search?.enabled === false) return { on: false, provider };
+  const deepseekModel = isDeepSeekModel(config);
+  // Without a section of its own, search follows the model: on with DeepSeek's, off with any other.
+  if (!search && !deepseekModel) return { on: false, provider };
+  const apiKey = search?.apiKey || (provider === "deepseek" && deepseekModel ? config.model?.apiKey : undefined);
+  if (apiKey) return { on: true, provider, apiKey };
+  return {
+    on: false,
+    provider,
+    problem: provider === "deepseek" ? "需要填 DeepSeek 的 key" : "需要填 AppBuilder API Key",
+  };
 }
 
 export function writeTemplate(home: string): string {

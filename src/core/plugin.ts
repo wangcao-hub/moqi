@@ -110,6 +110,8 @@ export interface Plugin {
   readonly name: string;
   // biome-ignore lint/suspicious/noExplicitAny: a plugin's tools have unrelated argument types
   readonly tools?: readonly Tool<any>[];
+  /** One line for the chat prompt's 「做事的方式」: when to reach for this plugin's tools. */
+  readonly guide?: string;
   /** A section for the daily briefing, or undefined to skip. */
   briefing?(ctx: PluginContext): Promise<BriefingSection | undefined> | BriefingSection | undefined;
   /** Runs on every tick; observe the world and propose offers. */

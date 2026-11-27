@@ -11,10 +11,11 @@ import type { Answer, EventStore, Offer, Surface } from "../core/types.js";
 import { a2aPlugin } from "../plugins/a2a.js";
 import { calendarPlugin } from "../plugins/calendar.js";
 import { newsPlugin } from "../plugins/news.js";
+import { searchPlugin } from "../plugins/search.js";
 import { type WeatherPlace, weatherPlugin } from "../plugins/weather.js";
 import { type AgentsPluginOptions, agentsPlugin } from "./agents.js";
 import { codeRunner, type Launch } from "./code.js";
-import { type Config, expandHome, loadConfig, readConfigFile, saveConfig } from "./config.js";
+import { type Config, expandHome, loadConfig, readConfigFile, saveConfig, searchSetup } from "./config.js";
 import { acquireLock, fileEventStore } from "./file-store.js";
 import { filesPlugin } from "./files.js";
 import { macPlugin } from "./mac.js";
@@ -112,6 +113,11 @@ export function pluginsFrom(
   if (config.a2a && config.a2a.agents.length > 0) plugins.push(a2aPlugin(config.a2a.agents, fetchImpl));
   if (config.news && config.news.feeds.length > 0)
     plugins.push(newsPlugin({ feeds: config.news.feeds, ...(fetchImpl && { fetch: fetchImpl }) }));
+  const search = searchSetup(config);
+  if (search.on)
+    plugins.push(
+      searchPlugin({ provider: search.provider, apiKey: search.apiKey, ...(fetchImpl && { fetch: fetchImpl }) }),
+    );
   if (config.files) plugins.push(filesPlugin({ folders: config.files.folders }));
   if (config.mac && platform === "darwin")
     plugins.push(macPlugin({ shortcuts: config.mac.shortcuts, ...(media && { media }) }));
