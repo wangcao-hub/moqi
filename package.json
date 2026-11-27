@@ -1,6 +1,6 @@
 {
   "name": "moqi-agent",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "A minimal personal agent that learns you and speaks up first. Pure TypeScript core for desktop and phone.",
   "keywords": [
     "personal-agent",
