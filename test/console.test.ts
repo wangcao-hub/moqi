@@ -43,6 +43,13 @@ function fakeNet(model: (body: { messages: { role: string; content: string }[] }
       );
     }
     if (url === "https://feed.test/rain") return new Response("<article><p>气象台说深圳明天有暴雨。</p></article>");
+    if (url === "https://api.deepseek.com/v1/tools/search")
+      return Response.json({ results: [{ title: "今天的新闻", url: "https://news.test/today", summary: "摘要" }] });
+    if (url === "https://qianfan.baidubce.com/v2/ai_search/web_search") {
+      return headers.get("authorization") === "Bearer bce-good"
+        ? Response.json({ references: [{ title: "百度的新闻", url: "https://news.test/b", content: "内容" }] })
+        : Response.json({ code: 216003, message: "Authentication error" }, { status: 401 });
+    }
     return new Response("not found", { status: 404 });
   }) as typeof fetch;
   return { fetch: impl, seen };
@@ -441,6 +448,83 @@ describe("console", () => {
       events: 0,
     });
     expect(readFileSync(ics, "utf8")).toContain("周会");
+  });
+});
+
+describe("console: web search", () => {
+  const DEEPSEEK = { baseURL: "https://api.deepseek.com/v1", model: "deepseek-chat" };
+
+  it("is on with DeepSeek's model, keeps the search key from the page, and only for the same service", async () => {
+    const { dir, home, api } = await start({ model: { ...DEEPSEEK, apiKey: "sk-model" }, briefingAt: null });
+    let got = await api("GET", "/api/config");
+    expect(got.data.search).toEqual({
+      enabled: true,
+      provider: "deepseek",
+      saved: false,
+      hasKey: false,
+      problem: null,
+    });
+    expect(got.data.env.searchKey).toBe(false);
+    expect(home.moqi.tool("web_search")).toBeDefined();
+
+    // A page that leaves search alone keeps it following the model.
+    const page = { ...got.data.config, model: DEEPSEEK };
+    expect((await api("POST", "/api/config", { config: page })).status).toBe(200);
+    expect(readConfigFile(dir).search).toBeUndefined();
+
+    const baidu = { enabled: true, provider: "baidu", apiKey: "bce-secret" };
+    expect((await api("POST", "/api/config", { config: { ...page, search: baidu } })).status).toBe(200);
+    got = await api("GET", "/api/config");
+    expect(JSON.stringify(got.data)).not.toContain("bce-secret");
+    expect(JSON.stringify(got.data)).not.toContain("sk-model");
+    expect(got.data.config.search).toBeUndefined();
+    expect(got.data.search).toEqual({ enabled: true, provider: "baidu", saved: true, hasKey: true, problem: null });
+
+    // A blank field keeps the key for the same service and never moves it to another.
+    await api("POST", "/api/config", { config: { ...page, search: { enabled: true, provider: "baidu" } } });
+    expect(readConfigFile(dir).search).toEqual(baidu);
+    await api("POST", "/api/config", { config: { ...page, search: { enabled: true, provider: "deepseek" } } });
+    expect(readConfigFile(dir).search).toEqual({ enabled: true, provider: "deepseek" });
+    expect(home.moqi.tool("web_search")).toBeDefined(); // with the model's key again
+
+    await api("POST", "/api/config", { config: { ...page, search: { enabled: false, provider: "deepseek" } } });
+    expect(home.moqi.tool("web_search")).toBeUndefined();
+    expect((await api("GET", "/api/config")).data.search).toMatchObject({ enabled: false, saved: true });
+  });
+
+  it("says which key is missing", async () => {
+    const { api, home } = await start({ model: MODEL, search: { provider: "deepseek" }, briefingAt: null });
+    expect((await api("GET", "/api/config")).data.search).toEqual({
+      enabled: true,
+      provider: "deepseek",
+      saved: true,
+      hasKey: false,
+      problem: "需要填 DeepSeek 的 key",
+    });
+    expect(home.moqi.tool("web_search")).toBeUndefined();
+  });
+
+  it("tries a search with what the form says, and shows the first title or what went wrong", async () => {
+    const { api, net } = await start({ model: { ...DEEPSEEK, apiKey: "sk-model" }, briefingAt: null });
+    expect((await api("POST", "/api/search/test", { search: { provider: "deepseek" } })).data).toEqual({
+      ok: true,
+      title: "今天的新闻",
+    });
+    expect(net.seen.find((s) => s.url === "https://api.deepseek.com/v1/tools/search")).toMatchObject({
+      auth: "Bearer sk-model",
+      body: { query: "今天的新闻", count: 1 },
+    });
+    expect((await api("POST", "/api/search/test", { search: { provider: "baidu" } })).data).toEqual({
+      ok: false,
+      error: "需要填 AppBuilder API Key",
+    });
+    expect((await api("POST", "/api/search/test", { search: { provider: "baidu", apiKey: "bce-bad" } })).data).toEqual({
+      ok: false,
+      error: "搜索的 key 不对，去设置里检查一下",
+    });
+    expect((await api("POST", "/api/search/test", { search: { provider: "baidu", apiKey: "bce-good" } })).data).toEqual(
+      { ok: true, title: "百度的新闻" },
+    );
   });
 });
 

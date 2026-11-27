@@ -60,6 +60,8 @@ let settingsLoaded = false;
 let weather = null; // { latitude, longitude, place }
 let hasKey = false;
 let keyFor = ""; // the endpoint the saved key belongs to
+let searchInfo = null; // what the settings said about web search when they were loaded
+let searchTouched = false; // the user changed a search field since then
 let toldAbout = ""; // the question id the user was already told about
 let effort; // reasoning strength for background work, set by the preset or the saved config
 let newsPresets = [];
@@ -1313,6 +1315,54 @@ $("f-on").addEventListener("change", () => {
   $("f-folders").disabled = !$("f-on").checked;
 });
 $("mac-on").addEventListener("change", () => toggle("mac-on", "mac-body"));
+
+function searchInput() {
+  return {
+    enabled: $("s-on").checked,
+    provider: $("s-provider").value,
+    apiKey: $("s-key").value.trim() || undefined,
+  };
+}
+
+function searchHint() {
+  const provider = $("s-provider").value;
+  const kept = !!searchInfo && searchInfo.hasKey && searchInfo.provider === provider;
+  $("s-key").placeholder = kept ? "已保存，留空就不改" : "";
+  $("s-key-hint").textContent = provider === "baidu" ? "填 AppBuilder API Key" : "留空就用模型的 key";
+}
+
+function toggleSearch() {
+  toggle("s-on", "s-body");
+  $("s-provider").disabled = !$("s-on").checked;
+}
+
+$("s-on").addEventListener("change", () => {
+  searchTouched = true;
+  toggleSearch();
+});
+$("s-provider").addEventListener("change", () => {
+  searchTouched = true;
+  searchHint();
+  setResult($("s-test-result"), "");
+});
+$("s-key").addEventListener("input", () => {
+  searchTouched = true;
+});
+
+$("s-test").addEventListener("click", async (e) => {
+  const button = e.currentTarget;
+  const out = $("s-test-result");
+  button.disabled = true;
+  setResult(out, "正在搜「今天的新闻」…");
+  try {
+    const r = await api("POST", "/api/search/test", { search: searchInput() });
+    if (r.ok) setResult(out, r.title ? `能用，搜到：${r.title}` : "能用，这次没有搜到结果", "ok");
+    else setResult(out, `不能用：${r.error}`, "bad");
+  } catch (error) {
+    setResult(out, error.message, "bad");
+  }
+  button.disabled = false;
+});
 $("p-browser").addEventListener("click", async () => {
   const on = !$("p-browser").dataset.on;
   $("p-browser").disabled = true;
@@ -1448,7 +1498,7 @@ function showWeather() {
 
 async function loadSettings() {
   try {
-    const { config, hasKey: saved, env, newsPresets: feeds, platform } = await api("GET", "/api/config");
+    const { config, hasKey: saved, env, newsPresets: feeds, platform, search } = await api("GET", "/api/config");
     newsPresets = feeds;
     settingsLoaded = true;
     hasKey = saved;
@@ -1466,6 +1516,7 @@ async function loadSettings() {
     const notes = [];
     if (env.model) notes.push("现在实际用的是环境变量 MOQI_BASE_URL 和 MOQI_MODEL 指定的模型，它优先于这里的设置。");
     if (env.apiKey) notes.push("API Key 来自环境变量 MOQI_API_KEY。");
+    if (env.searchKey) notes.push("联网搜索的 key 来自环境变量 MOQI_SEARCH_API_KEY。");
     $("env-note").textContent = notes.join(" ");
     $("env-note").hidden = notes.length === 0;
     $("persona").value = config.persona || "";
@@ -1487,6 +1538,15 @@ async function loadSettings() {
     $("q-to").value = config.quiet.to;
     $("budget").value = String(config.dailyBudget);
     showNews(config.news ? config.news.feeds : null);
+    searchInfo = search;
+    searchTouched = false;
+    $("s-on").checked = search.enabled;
+    $("s-provider").value = search.provider;
+    $("s-key").value = "";
+    searchHint();
+    toggleSearch();
+    if (search.enabled && search.problem) setResult($("s-test-result"), search.problem, "bad");
+    else setResult($("s-test-result"), "");
     $("f-on").checked = !!config.files;
     $("f-folders").value = (config.files ? config.files.folders : ["~/Downloads", "~/Desktop"]).join("\n");
     toggle("f-on", "f-body");
@@ -1996,6 +2056,8 @@ $("settings").addEventListener("submit", async (e) => {
     weather: $("w-on").checked ? weather : undefined,
     calendar: $("c-on").checked ? { ics: $("c-path").value.trim() } : undefined,
     news: { feeds }, // an empty list turns news off; leaving it out would mean the default feeds
+    // Left out while untouched and never saved, so search keeps following the model.
+    search: searchInfo?.saved || searchTouched ? searchInput() : undefined,
     files: $("f-on").checked ? { folders } : undefined,
     code: projectsInput().length
       ? { timeoutMinutes: Number($("code-timeout").value) || 30, projects: projectsInput() }
@@ -2009,6 +2071,7 @@ $("settings").addEventListener("submit", async (e) => {
   try {
     await api("POST", "/api/config", { config });
     $("m-key").value = "";
+    $("s-key").value = "";
     settingsLoaded = false;
     await loadSettings();
     setResult(out, "已保存，已经生效", "ok");

@@ -15,9 +15,18 @@ import { daysLate, laterTodos, recentlyDone, todayTodos } from "../../core/todo.
 import type { Answer, Choices, FactKind, Todo, Urgency, Verdict } from "../../core/types.js";
 import { parseIcs } from "../../plugins/calendar.js";
 import { NEWS_FEEDS } from "../../plugins/news.js";
+import { searchService } from "../../plugins/search.js";
 import { connectAgent, disconnectAgent, findAgents, importableServers } from "../agents.js";
 import type { Config } from "../config.js";
-import { ConfigSchema, expandHome, loadConfig, readConfigFile, saveConfig } from "../config.js";
+import {
+  ConfigSchema,
+  expandHome,
+  isDeepSeekModel,
+  loadConfig,
+  readConfigFile,
+  saveConfig,
+  searchSetup,
+} from "../config.js";
 import type { Home } from "../home.js";
 import { listShortcuts } from "../mac.js";
 import { MEDIA_ID, MEDIA_MAX, sniff } from "../media.js";
@@ -675,12 +684,28 @@ export async function startConsole(options: ConsoleOptions): Promise<Console> {
     "GET /api/config": () => {
       const file = readConfigFile(home.dir);
       const { apiKey, ...model } = file.model ?? { baseURL: "", model: "" };
+      // The search key stays on this computer like the model's; the page learns only whether one is saved.
+      const { search: savedSearch, ...rest } = file;
+      const running = home.config;
+      const setup = searchSetup(running);
       return {
-        config: { ...file, model: file.model ? model : null },
+        config: { ...rest, model: file.model ? model : null },
         hasKey: !!apiKey,
+        search: {
+          // Without a section of its own, search follows the model.
+          enabled: running.search ? running.search.enabled : isDeepSeekModel(running),
+          provider: running.search?.provider ?? "deepseek",
+          saved: savedSearch !== undefined,
+          hasKey: !!savedSearch?.apiKey,
+          problem: setup.on ? null : (setup.problem ?? null),
+        },
         newsPresets: NEWS_FEEDS,
         platform: process.platform,
-        env: { model: !!(env.MOQI_BASE_URL && env.MOQI_MODEL), apiKey: !!env.MOQI_API_KEY },
+        env: {
+          model: !!(env.MOQI_BASE_URL && env.MOQI_MODEL),
+          apiKey: !!env.MOQI_API_KEY,
+          searchKey: !!env.MOQI_SEARCH_API_KEY,
+        },
       };
     },
 
@@ -709,6 +734,16 @@ export async function startConsole(options: ConsoleOptions): Promise<Console> {
       // MCP servers and A2A agents have their own buttons; a page that does not send them keeps them.
       if (raw.mcp === undefined && file.mcp) raw.mcp = file.mcp;
       if (raw.a2a === undefined && file.a2a) raw.a2a = file.a2a;
+      // The search key, like the model's: a blank field keeps the saved one, but only for the same service.
+      const search = raw.search as Record<string, unknown> | undefined;
+      if (search && typeof search === "object") {
+        const old = file.search;
+        if (!search.apiKey && old?.apiKey && old.provider === (search.provider ?? "deepseek"))
+          search.apiKey = old.apiKey;
+        if (search.apiKey === "") delete search.apiKey;
+      }
+      // A page that leaves search out keeps what the file says; without a section, search follows the model.
+      if (raw.search === undefined && file.search) raw.search = file.search;
       const parsed = ConfigSchema.safeParse(raw);
       if (!parsed.success) {
         const issues = parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message }));
@@ -762,6 +797,24 @@ export async function startConsole(options: ConsoleOptions): Promise<Console> {
         return { ok: true, ms, reply: reply.content.trim().slice(0, 200), vision };
       } catch (error) {
         return { ok: false, ms: Date.now() - started, error: message(error) };
+      }
+    },
+
+    "POST /api/search/test": async (body) => {
+      const form = (body.search ?? {}) as Record<string, unknown>;
+      const provider = form.provider === "baidu" ? "baidu" : "deepseek";
+      const saved = readConfigFile(home.dir).search;
+      const typed = typeof form.apiKey === "string" ? form.apiKey.trim() : "";
+      const apiKey =
+        typed || env.MOQI_SEARCH_API_KEY || (saved?.provider === provider ? saved.apiKey : undefined) || undefined;
+      // The same rules moqi uses: with DeepSeek's model and no key of its own, the model's key.
+      const setup = searchSetup({ ...home.config, search: { enabled: true, provider, ...(apiKey && { apiKey }) } });
+      if (!setup.on) return { ok: false, error: setup.problem ?? "联网搜索没有开启" };
+      try {
+        const hits = await searchService({ provider, apiKey: setup.apiKey, fetch: doFetch }).search("今天的新闻", 1);
+        return { ok: true, title: hits[0]?.title ?? null };
+      } catch (error) {
+        return { ok: false, error: message(error) };
       }
     },
 
