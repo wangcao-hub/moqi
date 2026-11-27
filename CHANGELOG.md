@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Web search without the browser: `web_search` finds pages and `web_read` reads one, in the background and without asking. They go through DeepSeek's Search and Fetch API or Baidu AI Search (`search` in `config.json`, or Settings → 联网搜索 with a 「试一下」 button).
+- **After upgrading, web search is on by itself when your model is DeepSeek's (`api.deepseek.com`)**, using the model's key ($0.75 per 1000 searches or page reads). Turn it off in Settings → 联网搜索; it then stays off. Baidu needs its own AppBuilder API key (100 free searches a day). `MOQI_SEARCH_API_KEY` supplies the key.
+- What search brings back counts as outside content, so a dangerous action later in the turn is asked again. With Baidu, moqi downloads pages itself: public `http` and `https` addresses only, every redirect checked again (at most 5), text pages only, at most 2 MB.
+- While search is on, the chat prompt tells the model to search first and to use the browser only to log in, click or fill in forms. Plugins can add such a line with `Plugin.guide`.
+
 ## [0.8.1] - 2026-11-27
 
 - Fix: after six rounds of tools, DeepSeek could answer with its tool-call markup (`<｜｜DSML｜｜ calls>` …), shown as is in the conversation. The last call now keeps the tools with `tool_choice: "none"` and ends with a note that the tool calls are used up (taugraph 0.4.2), and tool-call markup left in an answer is removed. Depends on taugraph `^0.4.2`.
