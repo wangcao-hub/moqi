@@ -87,6 +87,27 @@ async function history(moqi: Moqi, limit: number, withImages: number): Promise<C
   return out;
 }
 
+/** How a message another agent wrote is marked when it joins the conversation (see the console's `fromAgent`). */
+const FROM_AGENT = /^【[^】]{1,40}】/;
+
+/**
+ * Whether outside content came in within the last `limit` messages: a call to a tool that is not local (or no longer
+ * exists), or a message another agent wrote. Counted from just after the last message that fell out of the window,
+ * so the tools behind the oldest answer still shown count too.
+ */
+function outsideIn(moqi: Moqi, limit: number): boolean {
+  const events = moqi.store.all();
+  const messages = events.flatMap((e, i) => (e.type === "message" ? [i] : []));
+  const from = messages.length > limit ? (messages[messages.length - limit - 1] ?? -1) + 1 : 0;
+  return events
+    .slice(from)
+    .some(
+      (e) =>
+        (e.type === "tool.called" && !moqi.tool(e.tool)?.local) ||
+        (e.type === "message" && e.role === "user" && FROM_AGENT.test(e.text)),
+    );
+}
+
 /** One user turn, as one taugraph agent run: answer with tools, then learn on the side. `fromAgent`: another agent wrote this message. */
 export async function chatTurn(
   moqi: Moqi,
@@ -98,17 +119,18 @@ export async function chatTurn(
   if (!model) throw new Error("moqi has no model; set one to chat (briefings and watches work without it)");
   const images = how.images ?? [];
   const past = await history(moqi, AGENT.historyMessages, AGENT.imageMessages - (images.length > 0 ? 1 : 0));
+  const outsideEarlier = outsideIn(moqi, AGENT.historyMessages);
   moqi.emit({ type: "message", role: "user", text, ...(images.length > 0 && { images: [...images] }) });
 
   // Once this turn has read anything from outside moqi, a dangerous action is asked again, unlocked or not.
   // A memory another agent wrote is in the prompt, so it counts from the start.
   let tainted = how.fromAgent === true || activeFacts(moqi.state, moqi.clock.now()).some((f) => f.by !== undefined);
-  // Addresses the user and the outside world gave the model this turn: the only ones a tool may download once
-  // outside content came in. `written`: the ones the model put into its own tool calls, which a result echoing
-  // them back does not make seen.
+  // Addresses the user and the outside world gave the model: the only ones a tool may download once outside content
+  // came in (this turn, or in the messages the model is shown). `written`: the ones the model put into its own tool
+  // calls, which a result echoing them back does not make seen.
   const seen = new Set<string>();
   const written = new Set<string>();
-  const sites: SiteGrant = { granted: new Set(), seen }; // and the sites the user agreed to open in this turn
+  const sites: SiteGrant = { granted: new Set(), seen, outsideEarlier }; // and the sites the user agreed to open
   const shown: string[] = []; // images tools brought back, for the user
   // A tool call that throws fails the turn with its error, as before the turn ran on taugraph: the agent would
   // hand it to the model as an answer, and after a write the model might do it again. Stopping the run keeps it
@@ -127,7 +149,9 @@ export async function chatTurn(
         try {
           noteWritten(written, seen, args);
           const result = await moqi.callTool(t.name, { ...args }, { byUser: true, tainted, sites, images: shown });
-          noteAddresses(seen, result, written);
+          // moqi's own tools (todos, memories, watches, ...) only give back what moqi keeps, which the model may
+          // have written in an earlier turn; only tools that reach outside moqi bring in addresses.
+          if (moqi.sourceOf(t.name) !== "moqi") noteAddresses(seen, result, written);
           return result;
         } catch (error) {
           failure ??= { error };
@@ -139,11 +163,10 @@ export async function chatTurn(
       },
     });
   });
-  // What the user said, now and before, and their own memories. Not moqi's past answers, the persona or study
-  // notes (the model wrote those), nor memories another agent or outside content wrote.
-  const own = activeFacts(moqi.state, moqi.clock.now()).filter((f) => f.by === undefined);
+  // What the user said, now and before. Not moqi's past answers, the persona or study notes (the model wrote
+  // those), nor memories: learning reads moqi's answers too, so any memory may hold an address the model wrote.
   const userSaid = past.filter((m) => m.role === "user").map((m) => textOf(m.content, { imagePlaceholder: "" }));
-  for (const said of [...userSaid, text, ...own.map((f) => f.content)]) noteAddresses(seen, said);
+  for (const said of [...userSaid, text]) noteAddresses(seen, said);
   const system = systemPrompt(moqi);
   const agent = createAgent({
     model,

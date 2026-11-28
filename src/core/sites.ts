@@ -13,6 +13,11 @@ export interface SiteGrant {
   readonly seen?: Set<string>;
   /** How many reads by address passed the check after outside content this turn; see `READS_AFTER_OUTSIDE`. */
   reads?: number;
+  /**
+   * Outside content came in within the messages the model is shown, before this turn: an address moqi wrote back
+   * then may still be in front of the model, so the `readsUrl` rule holds from the turn's start.
+   */
+  readonly outsideEarlier?: boolean;
 }
 
 /**

@@ -432,9 +432,10 @@ export class Moqi {
     const ctx = { now: () => this.clock.now(), state: this.state, ...(how.tainted && { tainted: true }) };
     const problem = tool.validate?.(parsed.data, ctx);
     if (problem) return `参数不对：${problem}`; // back to the model; never ask the user to approve a broken call
-    // After outside content, an address the model put together is not read; asking would only teach the user to say yes.
-    // The tool gets the address as it was compared, so what goes out is what was checked.
-    if (how.tainted === true && how.sites?.seen) {
+    // After outside content (this turn, or in the messages the model is shown), an address the model put together is
+    // not read; asking would only teach the user to say yes. The tool gets the address as it was compared, so what
+    // goes out is what was checked. `tainted` itself is left alone: confirmations go by this turn only.
+    if ((how.tainted === true || how.sites?.outsideEarlier === true) && how.sites?.seen) {
       const data = parsed.data as Record<string, unknown>;
       if (tool.readsUrl) {
         const url = seenAddress(how.sites.seen, typeof data.url === "string" ? data.url : "");
