@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-28
+
 - Web search without the browser: `web_search` finds pages and `web_read` reads one, in the background and without asking. They go through DeepSeek's Search and Fetch API or Baidu AI Search (`search` in `config.json`, or Settings → 联网搜索 with a 「试一下」 button).
 - **After upgrading, web search is on by itself when your model is DeepSeek's (`api.deepseek.com`)**, using the model's key ($0.75 per 1000 searches or page reads). Turn it off in Settings → 联网搜索; it then stays off. Baidu needs its own AppBuilder API key (100 free searches a day). `MOQI_SEARCH_API_KEY` supplies the key.
 - What search brings back counts as outside content, so a dangerous action later in the turn is asked again. With Baidu, moqi downloads pages itself: public `http` and `https` addresses only, every redirect checked again (at most 5), text pages only, at most 2 MB.
