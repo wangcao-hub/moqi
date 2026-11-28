@@ -6,7 +6,7 @@ import { activeFacts, OUTSIDE, promptSection } from "./memory.js";
 import { MEDIA } from "./model.js";
 import type { Moqi } from "./moqi.js";
 import { toolSpec } from "./plugin.js";
-import { noteAddresses, noteWritten, type SiteGrant } from "./sites.js";
+import { noteAddresses, noteWritten, type SiteGrant, seenAddress } from "./sites.js";
 import { studySection } from "./study.js";
 import { newId } from "./types.js";
 
@@ -108,6 +108,24 @@ function outsideIn(moqi: Moqi, limit: number): boolean {
     );
 }
 
+/**
+ * Addresses the model put into tool calls in earlier turns, from the event log in one pass: a tool may have stored
+ * them (a file, a note, a plugin's own store) and give them back now, which does not make them seen. Left out: the
+ * arguments of `readsUrl` tools (reading stores nothing, and a page read before may be found again), and addresses
+ * the user sent in some message (the user's own words may be saved and read back).
+ */
+function writtenEarlier(moqi: Moqi): Set<string> {
+  const said = new Set<string>();
+  const stored = new Set<string>();
+  const none: ReadonlySet<string> = new Set();
+  for (const e of moqi.store.all()) {
+    if (e.type === "message" && e.role === "user") noteAddresses(said, e.text);
+    else if (e.type === "tool.called" && !moqi.tool(e.tool)?.readsUrl) noteWritten(stored, none, e.args);
+  }
+  for (const a of stored) if (seenAddress(said, a)) stored.delete(a);
+  return stored;
+}
+
 /** One user turn, as one taugraph agent run: answer with tools, then learn on the side. `fromAgent`: another agent wrote this message. */
 export async function chatTurn(
   moqi: Moqi,
@@ -127,9 +145,9 @@ export async function chatTurn(
   let tainted = how.fromAgent === true || activeFacts(moqi.state, moqi.clock.now()).some((f) => f.by !== undefined);
   // Addresses the user and the outside world gave the model: the only ones a tool may download once outside content
   // came in (this turn, or in the messages the model is shown). `written`: the ones the model put into its own tool
-  // calls, which a result echoing them back does not make seen.
+  // calls, this turn or earlier ones, which a result echoing them back does not make seen.
   const seen = new Set<string>();
-  const written = new Set<string>();
+  const written = writtenEarlier(moqi);
   const sites: SiteGrant = { granted: new Set(), seen, outsideEarlier }; // and the sites the user agreed to open
   const shown: string[] = []; // images tools brought back, for the user
   // A tool call that throws fails the turn with its error, as before the turn ran on taugraph: the agent would

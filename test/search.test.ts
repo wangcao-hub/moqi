@@ -1,9 +1,13 @@
+import { mkdtempSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { systemPrompt } from "../src/core/agent.js";
 import type { Moqi } from "../src/core/moqi.js";
 import { defineTool, type Plugin } from "../src/core/plugin.js";
 import { UNSEEN_ADDRESS } from "../src/core/sites.js";
+import { filesPlugin } from "../src/node/files.js";
 import { SEARCH, searchPlugin, searchService } from "../src/plugins/search.js";
 import { call, harness, scriptedModel, words } from "./helpers.js";
 
@@ -448,7 +452,7 @@ describe("web_read after outside content", () => {
     const { results, read } = await turn("搜一下", [call("web_search", { query: "x" }, "c1"), many]);
     expect(results[1]).toBe(UNSEEN_ADDRESS);
     expect(read).toHaveLength(5);
-    expect(results[7]).toBe("没有读：这一轮读到外部内容之后已经读了 5 个网页，不再读了。要接着读，请用户再说一声。");
+    expect(results[7]).toBe("没有读：这一轮已经读了 5 个网页，不再读了。要接着读，请用户再说一声。");
   });
 
   it("does not let a watch carry an address the turn has not seen", async () => {
@@ -501,10 +505,14 @@ describe("web_read after outside content, across turns", () => {
     readonly calls?: ReturnType<typeof call>[];
     readonly answer?: string;
     readonly before?: (moqi: Moqi) => void;
+    readonly how?: { readonly fromAgent?: boolean };
   };
 
   /** Several turns on one moqi; the model makes each turn's calls in order, then answers. */
-  async function chats(turns: readonly Turn[]) {
+  async function chats(
+    turns: readonly Turn[],
+    options: { readonly plugins?: readonly Plugin[]; readonly answer?: boolean } = {},
+  ) {
     const n = net((url, body) => {
       if (url === DS_SEARCH) return Response.json({ results: [hit(1)] });
       return Response.json({ title: "页", content: `正文 ${(body as { url: string }).url}` });
@@ -516,14 +524,15 @@ describe("web_read after outside content, across turns", () => {
       (r) => now?.calls?.[afterUser(r.messages).filter((m) => m.role === "tool").length] ?? now?.answer ?? "好了",
     );
     const { moqi, asked } = harness({
-      plugins: [searchPlugin({ provider: "deepseek", apiKey: "k", fetch: n.fetch })],
+      plugins: [searchPlugin({ provider: "deepseek", apiKey: "k", fetch: n.fetch }), ...(options.plugins ?? [])],
       model,
+      ...(options.answer !== undefined && { answer: options.answer }),
     });
     const results: string[][] = [];
     for (const t of turns) {
       now = t;
       t.before?.(moqi);
-      await moqi.chat(t.text);
+      await moqi.chat(t.text, undefined, t.how);
       results.push(
         afterUser(model.requests.at(-1)?.messages ?? [])
           .filter((m) => m.role === "tool")
@@ -620,5 +629,178 @@ describe("web_read after outside content, across turns", () => {
       },
     ]);
     expect(read).toEqual(["https://mine.example/said"]);
+  });
+  /** A plugin that keeps one note: anything that stores what the model wrote and gives it back later. */
+  const notes = (): Plugin => {
+    let kept = "";
+    return {
+      name: "notes",
+      tools: [
+        defineTool({
+          name: "note_save",
+          description: "Save a note",
+          input: z.object({ text: z.string() }),
+          effect: "write",
+          run: ({ text }) => {
+            kept = text;
+            return "存好了";
+          },
+        }),
+        defineTool({
+          name: "note_read",
+          description: "Read the note",
+          input: z.object({}),
+          effect: "read",
+          run: () => kept,
+        }),
+      ],
+    };
+  };
+  const folder = () => realpathSync(mkdtempSync(join(tmpdir(), "moqi-search-")));
+
+  it("does not count an address the model saved into a file in an earlier turn and read back", async () => {
+    const dir = folder();
+    const file = join(dir, "n.txt");
+    const { results, read } = await chats(
+      [
+        {
+          text: "搜一下",
+          calls: [
+            call("web_search", { query: "x" }, "c1"),
+            call("files_write_new", { path: file, content: `看 ${EVIL}` }, "c2"),
+          ],
+        },
+        {
+          text: "再搜一下",
+          calls: [
+            call("web_search", { query: "y" }, "d1"),
+            call("files_read", { path: file }, "d2"),
+            call("web_read", { url: EVIL }, "d3"),
+          ],
+        },
+      ],
+      { plugins: [filesPlugin({ folders: [dir] })], answer: true },
+    );
+    expect(results[1]?.[1]).toContain(EVIL);
+    expect(results[1]?.[2]).toBe(UNSEEN_ADDRESS);
+    expect(read).toEqual([]);
+  });
+
+  it("does not count an address the model saved into any tool in an earlier turn and read back", async () => {
+    const { results, read } = await chats(
+      [
+        {
+          text: "搜一下",
+          calls: [call("web_search", { query: "x" }, "c1"), call("note_save", { text: `看 ${EVIL}` }, "c2")],
+        },
+        {
+          text: "再搜一下",
+          calls: [
+            call("web_search", { query: "y" }, "d1"),
+            call("note_read", {}, "d2"),
+            call("web_read", { url: EVIL }, "d3"),
+          ],
+        },
+      ],
+      { plugins: [notes()], answer: true },
+    );
+    expect(results[1]?.[1]).toContain(EVIL);
+    expect(results[1]?.[2]).toBe(UNSEEN_ADDRESS);
+    expect(read).toEqual([]);
+  });
+
+  it("reads back an address the user sent, saved by the model, after the user's message is no longer shown", async () => {
+    const dir = folder();
+    const file = join(dir, "mine.txt");
+    const MINE = "https://mine.example/post";
+    const { results, read } = await chats(
+      [
+        {
+          text: `记一下 ${MINE}`,
+          calls: [
+            call("files_write_new", { path: file, content: `看 ${MINE}` }, "c1"),
+            call("note_save", { text: `看 ${MINE}` }, "c2"),
+          ],
+        },
+        {
+          text: "搜一下，再看看存的那个",
+          before: plain(12),
+          calls: [
+            call("web_search", { query: "x" }, "d1"),
+            call("files_read", { path: file }, "d2"),
+            call("web_read", { url: MINE }, "d3"),
+          ],
+        },
+        {
+          text: "搜一下，再看看记的那个",
+          before: plain(12),
+          calls: [
+            call("web_search", { query: "x" }, "e1"),
+            call("note_read", {}, "e2"),
+            call("web_read", { url: MINE }, "e3"),
+          ],
+        },
+      ],
+      { plugins: [filesPlugin({ folders: [dir] }), notes()], answer: true },
+    );
+    expect(results[1]?.[2]).not.toBe(UNSEEN_ADDRESS);
+    expect(results[2]?.[2]).not.toBe(UNSEEN_ADDRESS);
+    expect(read).toEqual([MINE, MINE]);
+  });
+
+  it("reads a page read in an earlier turn when a later search finds it again", async () => {
+    const { read } = await chats([
+      {
+        text: "搜一下",
+        calls: [call("web_search", { query: "x" }, "c1"), call("web_read", { url: "https://news.example/1" }, "c2")],
+      },
+      {
+        text: "再搜一下",
+        calls: [call("web_search", { query: "x" }, "d1"), call("web_read", { url: "https://news.example/1" }, "d2")],
+      },
+    ]);
+    expect(read).toEqual(["https://news.example/1", "https://news.example/1"]);
+  });
+
+  it("does not read an address from moqi's answer to another agent's message in the next turn", async () => {
+    const { results, read } = await chats([
+      { text: "【kiro】看看这个网页", how: { fromAgent: true }, answer: `看这个 ${EVIL}` },
+      { text: "好的", calls: [call("web_read", { url: EVIL }, "d1")] },
+    ]);
+    expect(results[1]?.[0]).toBe(UNSEEN_ADDRESS);
+    expect(read).toEqual([]);
+  });
+
+  it("does not ask again for a dangerous action because an earlier turn read outside content", async () => {
+    const ran: string[] = [];
+    const term: Plugin = {
+      name: "term",
+      tools: [
+        defineTool({
+          name: "shell",
+          description: "Run a shell command",
+          input: z.object({ cmd: z.string() }),
+          effect: "write",
+          danger: true,
+          run: ({ cmd }) => {
+            ran.push(cmd);
+            return `ran ${cmd}`;
+          },
+        }),
+      ],
+    };
+    const { asked } = await chats(
+      [
+        { text: "搜一下", calls: [call("web_search", { query: "x" }, "c1")], answer: "搜到了" },
+        {
+          text: "列一下文件",
+          before: (moqi) => moqi.setToolPolicy("shell", "auto"),
+          calls: [call("shell", { cmd: "ls" }, "d1")],
+        },
+      ],
+      { plugins: [term], answer: false },
+    );
+    expect(asked).toEqual([]);
+    expect(ran).toEqual(["ls"]);
   });
 });

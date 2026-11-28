@@ -2,7 +2,15 @@ import type { LLMRequest } from "taugraph/nodes";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineTool, type Plugin } from "../src/core/plugin.js";
-import { addressesIn, appeared, hostOf, noteAddresses, seenAddress, siteDecision } from "../src/core/sites.js";
+import {
+  addressesIn,
+  appeared,
+  hostOf,
+  noteAddresses,
+  seenAddress,
+  siteDecision,
+  UNSEEN_ADDRESS,
+} from "../src/core/sites.js";
 import { State } from "../src/core/state.js";
 import { call, harness, scriptedModel } from "./helpers.js";
 
@@ -217,6 +225,12 @@ describe("site grants", () => {
 });
 
 describe("addresses a turn has seen", () => {
+  it("says why it did not read, whichever turn the outside content came in", () => {
+    expect(UNSEEN_ADDRESS).toBe(
+      "没有读：对话里读到过外部内容，之后只能读用户发来的、或工具结果里原样出现过的网址，这个网址没有出现过。要读的话，请用户把网址发过来。",
+    );
+  });
+
   it("picks addresses out of text the way a reader would", () => {
     expect(
       addressesIn(

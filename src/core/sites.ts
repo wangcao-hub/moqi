@@ -71,7 +71,7 @@ export function pageHost(result: string): string | undefined {
 
 /** What a tool marked `readsUrl` answers, instead of reading, for an address the turn has not seen. */
 export const UNSEEN_ADDRESS =
-  "没有读：这一轮读到了外部内容，之后只能读这一轮里原样出现过的网址，这个网址没有出现过。要读的话，请用户把网址发过来。";
+  "没有读：对话里读到过外部内容，之后只能读用户发来的、或工具结果里原样出现过的网址，这个网址没有出现过。要读的话，请用户把网址发过来。";
 
 /** An address as `seen` keeps it: parsed and printed back (host case, encoding), without the part after #. */
 function normalised(url: string): string | undefined {
@@ -173,4 +173,4 @@ export function appeared(seen: ReadonlySet<string>, url: string): boolean {
 export const READS_AFTER_OUTSIDE = 5;
 
 /** What a tool marked `readsUrl` answers once the turn has used up `READS_AFTER_OUTSIDE`. */
-export const TOO_MANY_READS = `没有读：这一轮读到外部内容之后已经读了 ${READS_AFTER_OUTSIDE} 个网页，不再读了。要接着读，请用户再说一声。`;
+export const TOO_MANY_READS = `没有读：这一轮已经读了 ${READS_AFTER_OUTSIDE} 个网页，不再读了。要接着读，请用户再说一声。`;
