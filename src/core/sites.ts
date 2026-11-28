@@ -121,9 +121,17 @@ export function noteAddresses(seen: Set<string>, text: string, written?: Readonl
     const n = normalised(url);
     if (!n) continue;
     let echoed = false;
-    if (written) for (const w of written) if (n.startsWith(w) || w.startsWith(n)) echoed = true;
+    // A longer form of a written address may carry what the model wrote; a written bare site (https://x/) carries
+    // no more than its name, so links on that site still count.
+    if (written) for (const w of written) if (w.startsWith(n) || (n.startsWith(w) && !bareSite(w))) echoed = true;
     if (!echoed) seen.add(n);
   }
+}
+
+/** An address with nothing after the site: `https://x.example/`. */
+function bareSite(url: string): boolean {
+  const u = new URL(url);
+  return u.pathname === "/" && u.search === "";
 }
 
 /**

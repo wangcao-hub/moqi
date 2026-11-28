@@ -287,4 +287,11 @@ describe("addresses a turn has seen", () => {
     );
     expect([...seen]).toEqual(["https://news.example/1"]);
   });
+
+  it("still counts links on a site the model only named", () => {
+    const seen = new Set<string>();
+    const written = new Set<string>(["https://github.com/"]);
+    noteAddresses(seen, "https://github.com/ 和 https://github.com/wangcao-hub/taugraph", written);
+    expect([...seen]).toEqual(["https://github.com/wangcao-hub/taugraph"]);
+  });
 });
