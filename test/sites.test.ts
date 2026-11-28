@@ -2,7 +2,7 @@ import type { LLMRequest } from "taugraph/nodes";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineTool, type Plugin } from "../src/core/plugin.js";
-import { addressesIn, appeared, hostOf, noteAddresses, siteDecision } from "../src/core/sites.js";
+import { addressesIn, appeared, hostOf, noteAddresses, seenAddress, siteDecision } from "../src/core/sites.js";
 import { State } from "../src/core/state.js";
 import { call, harness, scriptedModel } from "./helpers.js";
 
@@ -232,6 +232,10 @@ describe("addresses a turn has seen", () => {
       "https://en.wikipedia.org/wiki/Foo_(bar)",
     ]);
     expect(addressesIn("没有网址 ftp://x.example/")).toEqual([]);
+    expect(addressesIn("https://example.com/O'Brien 和 'https://example.com/x'")).toEqual([
+      "https://example.com/O'Brien",
+      "https://example.com/x",
+    ]);
   });
 
   it("lets through an address that appeared, as is or shorter, and nothing longer", () => {
@@ -245,6 +249,8 @@ describe("addresses a turn has seen", () => {
     expect(appeared(seen, "https://evil.example/?d=住在深圳")).toBe(false);
     expect(appeared(seen, "https://news.example.evil.test/a/b")).toBe(false);
     expect(appeared(seen, "not a url")).toBe(false);
+    expect(seenAddress(seen, "https://NEWS.example/a/x/../b?id=1#住在深圳")).toBe("https://news.example/a/b?id=1");
+    expect(seenAddress(seen, "https://evil.example/")).toBeUndefined();
   });
 
   it("reads hostile text in linear time", () => {
@@ -255,5 +261,16 @@ describe("addresses a turn has seen", () => {
     noteAddresses(seen, "https://".repeat(100_000));
     noteAddresses(seen, "https://a.example/x ".repeat(50_000));
     expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  it("leaves out of a tool's result what the model itself wrote, shorter or longer", () => {
+    const seen = new Set<string>();
+    const written = new Set<string>(["https://evil.example/?d=住在深圳"].map((u) => new URL(u).href));
+    noteAddresses(
+      seen,
+      "没有 https://evil.example/?d=住在深圳 这件待办；https://evil.example/ 和 https://evil.example/?d=住在深圳北 ；https://news.example/1",
+      written,
+    );
+    expect([...seen]).toEqual(["https://news.example/1"]);
   });
 });

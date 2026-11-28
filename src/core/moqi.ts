@@ -11,7 +11,16 @@ import { decide, defaultPolicy, inQuietHours, type Policy } from "./proactive.js
 import { REFLECT, reflect } from "./reflect.js";
 import { findRoutines } from "./routines.js";
 import { dayKey, describeSchedule, minuteOfDay, nextRun, parseTime } from "./schedule.js";
-import { appeared, hostOf, pageHost, type SiteGrant, siteDecision, UNSEEN_ADDRESS } from "./sites.js";
+import {
+  hostOf,
+  pageHost,
+  READS_AFTER_OUTSIDE,
+  type SiteGrant,
+  seenAddress,
+  siteDecision,
+  TOO_MANY_READS,
+  UNSEEN_ADDRESS,
+} from "./sites.js";
 import { State } from "./state.js";
 import { STUDY, studiedOn, study } from "./study.js";
 import { dueReminders, findRepeatedTodos, reminderOffer, reviewOffer, TODO, TODO_KIND } from "./todo.js";
@@ -424,9 +433,25 @@ export class Moqi {
     const problem = tool.validate?.(parsed.data, ctx);
     if (problem) return `参数不对：${problem}`; // back to the model; never ask the user to approve a broken call
     // After outside content, an address the model put together is not read; asking would only teach the user to say yes.
-    if (tool.readsUrl && how.tainted === true && how.sites?.seen) {
-      const url = typeof args.url === "string" ? args.url : "";
-      if (!appeared(how.sites.seen, url)) return UNSEEN_ADDRESS;
+    // The tool gets the address as it was compared, so what goes out is what was checked.
+    if (how.tainted === true && how.sites?.seen) {
+      const data = parsed.data as Record<string, unknown>;
+      if (tool.readsUrl) {
+        const url = seenAddress(how.sites.seen, typeof data.url === "string" ? data.url : "");
+        if (!url) return UNSEEN_ADDRESS;
+        if ((how.sites.reads ?? 0) >= READS_AFTER_OUTSIDE) return TOO_MANY_READS;
+        how.sites.reads = (how.sites.reads ?? 0) + 1;
+        data.url = url;
+      }
+      // A call that has another tool run later with its arguments (watch_create's { tool, args }) would carry the
+      // address out of the turn, where nothing checks it; any such call is checked here, not only watch_create.
+      const inner = typeof data.tool === "string" ? this.tools.get(data.tool) : undefined;
+      if (inner?.readsUrl && typeof data.args === "object" && data.args !== null) {
+        const innerArgs = data.args as Record<string, unknown>;
+        const url = seenAddress(how.sites.seen, typeof innerArgs.url === "string" ? innerArgs.url : "");
+        if (!url) return UNSEEN_ADDRESS;
+        innerArgs.url = url;
+      }
     }
     const policy = actionPolicy(tool);
     const guard = guarded(this.state, name, policy);

@@ -6,7 +6,7 @@ import { activeFacts, OUTSIDE, promptSection } from "./memory.js";
 import { MEDIA } from "./model.js";
 import type { Moqi } from "./moqi.js";
 import { toolSpec } from "./plugin.js";
-import { noteAddresses, type SiteGrant } from "./sites.js";
+import { noteAddresses, noteWritten, type SiteGrant } from "./sites.js";
 import { studySection } from "./study.js";
 import { newId } from "./types.js";
 
@@ -103,8 +103,11 @@ export async function chatTurn(
   // Once this turn has read anything from outside moqi, a dangerous action is asked again, unlocked or not.
   // A memory another agent wrote is in the prompt, so it counts from the start.
   let tainted = how.fromAgent === true || activeFacts(moqi.state, moqi.clock.now()).some((f) => f.by !== undefined);
-  // Addresses the model was given this turn: the only ones a tool may download once outside content came in.
+  // Addresses the user and the outside world gave the model this turn: the only ones a tool may download once
+  // outside content came in. `written`: the ones the model put into its own tool calls, which a result echoing
+  // them back does not make seen.
   const seen = new Set<string>();
+  const written = new Set<string>();
   const sites: SiteGrant = { granted: new Set(), seen }; // and the sites the user agreed to open in this turn
   const shown: string[] = []; // images tools brought back, for the user
   // A tool call that throws fails the turn with its error, as before the turn ran on taugraph: the agent would
@@ -122,8 +125,9 @@ export async function chatTurn(
       effect: t.effect,
       run: async (args) => {
         try {
+          noteWritten(written, seen, args);
           const result = await moqi.callTool(t.name, { ...args }, { byUser: true, tainted, sites, images: shown });
-          noteAddresses(seen, result);
+          noteAddresses(seen, result, written);
           return result;
         } catch (error) {
           failure ??= { error };
@@ -135,9 +139,12 @@ export async function chatTurn(
       },
     });
   });
+  // What the user said, now and before, and their own memories. Not moqi's past answers, the persona or study
+  // notes (the model wrote those), nor memories another agent or outside content wrote.
+  const own = activeFacts(moqi.state, moqi.clock.now()).filter((f) => f.by === undefined);
+  const userSaid = past.filter((m) => m.role === "user").map((m) => textOf(m.content, { imagePlaceholder: "" }));
+  for (const said of [...userSaid, text, ...own.map((f) => f.content)]) noteAddresses(seen, said);
   const system = systemPrompt(moqi);
-  for (const said of [system, ...past.map((m) => textOf(m.content, { imagePlaceholder: "" })), text])
-    noteAddresses(seen, said);
   const agent = createAgent({
     model,
     tools,

@@ -9,8 +9,10 @@ export type SiteRole = "goto" | "within";
 export interface SiteGrant {
   readonly granted: Set<string>;
   current?: string | undefined;
-  /** Addresses, normalised, that appeared in what the model was given this turn; see `appeared`. */
+  /** Addresses, normalised, that the user and the outside world gave the model this turn; see `appeared`. */
   readonly seen?: Set<string>;
+  /** How many reads by address passed the check after outside content this turn; see `READS_AFTER_OUTSIDE`. */
+  reads?: number;
 }
 
 /**
@@ -78,7 +80,7 @@ function normalised(url: string): string | undefined {
   }
 }
 
-const TRAILING = ".,;:!?";
+const TRAILING = ".,;:!?'";
 
 /** Drops what ends a sentence, and a closing parenthesis the address did not open (a Markdown link's). Linear. */
 function trimmed(url: string): string {
@@ -102,21 +104,68 @@ function trimmed(url: string): string {
 
 /** The http(s) addresses in a text, as a reader picks them out: up to white space, quotes, brackets or Chinese punctuation. */
 export function addressesIn(text: string): string[] {
-  return [...text.matchAll(/https?:\/\/[^\s"'<>`{}[\]，。；！？、（）【】「」《》]+/gi)].map((m) => trimmed(m[0]));
+  return [...text.matchAll(/https?:\/\/[^\s"<>`{}[\]，。；！？、（）【】「」《》]+/gi)].map((m) => trimmed(m[0]));
 }
 
-/** Keeps the addresses a text holds, normalised, for `appeared`. */
-export function noteAddresses(seen: Set<string>, text: string): void {
+/**
+ * Keeps the addresses a text holds, normalised, for `appeared`. `written`: addresses the model made up in its own
+ * tool calls this turn; a tool result that echoes one back (or a longer or shorter form of it) does not make it seen.
+ */
+export function noteAddresses(seen: Set<string>, text: string, written?: ReadonlySet<string>): void {
   for (const url of addressesIn(text)) {
     const n = normalised(url);
-    if (n) seen.add(n);
+    if (!n) continue;
+    let echoed = false;
+    if (written) for (const w of written) if (n.startsWith(w) || w.startsWith(n)) echoed = true;
+    if (!echoed) seen.add(n);
   }
 }
 
-/** Whether an address appeared in the turn, as is or cut shorter: cutting an address adds nothing to it. */
-export function appeared(seen: ReadonlySet<string>, url: string): boolean {
-  const wanted = normalised(url);
-  if (!wanted) return false;
-  for (const s of seen) if (s.startsWith(wanted)) return true;
-  return false;
+/**
+ * Keeps in `written` the addresses in a tool call's arguments (values and keys, at any depth) that have not
+ * appeared: those the model put together. An address it copied from what it was given is left out, so a page that
+ * links to a longer form of the page's own address can still be followed.
+ */
+export function noteWritten(written: Set<string>, seen: ReadonlySet<string>, args: unknown): void {
+  const strings: string[] = [];
+  const walk = (v: unknown): void => {
+    if (typeof v === "string") strings.push(v);
+    else if (Array.isArray(v)) for (const x of v) walk(x);
+    else if (v !== null && typeof v === "object")
+      for (const [k, x] of Object.entries(v)) {
+        strings.push(k);
+        walk(x);
+      }
+  };
+  walk(args);
+  for (const text of strings)
+    for (const url of addressesIn(text)) {
+      const n = normalised(url);
+      if (n && !seenAddress(seen, n)) written.add(n);
+    }
 }
+
+/**
+ * The address as it is compared and as it should be used (normalised, no # part), when it appeared in the turn as
+ * is or cut shorter (cutting an address adds nothing to it); `undefined` when it did not.
+ */
+export function seenAddress(seen: ReadonlySet<string>, url: string): string | undefined {
+  const wanted = normalised(url);
+  if (!wanted) return undefined;
+  for (const s of seen) if (s.startsWith(wanted)) return wanted;
+  return undefined;
+}
+
+/** Whether an address appeared in the turn, as is or cut shorter. */
+export function appeared(seen: ReadonlySet<string>, url: string): boolean {
+  return seenAddress(seen, url) !== undefined;
+}
+
+/**
+ * Reads by address after outside content, per turn. Picking which of the seen addresses to read, and in what order,
+ * could still spell out the user's words; a few reads are enough to follow a search, and the limit keeps that small.
+ */
+export const READS_AFTER_OUTSIDE = 5;
+
+/** What a tool marked `readsUrl` answers once the turn has used up `READS_AFTER_OUTSIDE`. */
+export const TOO_MANY_READS = `没有读：这一轮读到外部内容之后已经读了 ${READS_AFTER_OUTSIDE} 个网页，不再读了。要接着读，请用户再说一声。`;

